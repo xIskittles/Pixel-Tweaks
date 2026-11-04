@@ -6,3 +6,5 @@ local.properties
 .idea/
 captures/
 .git_old/
+
+.github/
