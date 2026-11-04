@@ -1728,6 +1728,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 } catch (Throwable ignored) {}
                 float t = plate ? px : 0f;
                 if (plate && v.getTranslationY() != t) v.setTranslationY(t);
+                if (plate) {
+                    float al = lcQsImmediate ? 0f : 1f;
+                    if (v.getAlpha() != al && (lcQsImmediate || v.getAlpha() == 0f)) v.setAlpha(al);
+                }
             }
         }
     }
@@ -1862,10 +1866,23 @@ public class MainHook implements IXposedHookLoadPackage {
             if (qsx != null) {
                 XposedBridge.hookAllMethods(qsx, "setExpandImmediate", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
-                        StringBuilder sb = new StringBuilder();
-                        StackTraceElement[] st = new Throwable().getStackTrace();
-                        for (int i = 2; i < Math.min(st.length, 8); i++) sb.append(st[i].getMethodName()).append('<');
-                        lcQsImmediate = Boolean.TRUE.equals(p.args[0]);
+                        boolean on = Boolean.TRUE.equals(p.args[0]);
+                        {
+                            StringBuilder sb = new StringBuilder();
+                            StackTraceElement[] st = new Throwable().getStackTrace();
+                            for (int i = 2; i < Math.min(st.length, 9); i++) sb.append(st[i].getMethodName()).append('<');
+                            XposedBridge.log("LC qs: setExpandImmediate(" + on + ") sess=" + lcQsImmediate + " by " + sb);
+                        }
+                        if (!on && lcQsImmediate) {
+                            // keep native QS mode for the whole open session so one swipe closes it
+                            boolean collapsed = true;
+                            try {
+                                Object n = lcNpvc;
+                                if (n != null) collapsed = (Boolean) XposedHelpers.callMethod(n, "isFullyCollapsed");
+                            } catch (Throwable ignored) {}
+                            if (!collapsed) { p.setResult(null); return; }
+                        }
+                        lcQsImmediate = on;
                     }
                 });
                 XposedBridge.hookAllMethods(qsx, "setExpansionHeight", new XC_MethodHook() {
@@ -1903,6 +1920,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (e.getRawX() < w / 2f) return;
                             Object qs = XposedHelpers.getObjectField(npvc, "mQsController");
                             if (!(Boolean) XposedHelpers.callMethod(qs, "isExpansionEnabled")) return;
+                            lcQsImmediate = true;
                             XposedHelpers.callMethod(qs, "setExpandImmediate", true);
                             try {
                                 Object nssl = XposedHelpers.getObjectField(
