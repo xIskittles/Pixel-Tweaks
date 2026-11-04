@@ -1681,8 +1681,31 @@ public class MainHook implements IXposedHookLoadPackage {
 
     // Partial-shade-only customization. It never changes status-bar or full-QS geometry.
     private static volatile boolean lcPartialShade;
+    private static boolean lcHeaderApplied;
     private static final List<View> lcNotificationViews =
             Collections.synchronizedList(new ArrayList<View>());
+    private static final List<View> lcMotionHeaders =
+            Collections.synchronizedList(new ArrayList<View>());
+
+    private static void lcApplyPartialHeader(View root) {
+        try {
+            String n = root.getClass().getName();
+            if (n.contains("NoRemeasureMotionLayout")) {
+                java.lang.reflect.Method m = root.getClass().getMethod("setProgress", float.class);
+                m.invoke(root, lcPartialShade ? 1f : 0f);
+                if (!lcHeaderApplied && lcPartialShade) {
+                    lcHeaderApplied = true;
+                    XposedBridge.log("LC partial: header progress=1 applied");
+                }
+            }
+            if (root instanceof ViewGroup) {
+                ViewGroup g = (ViewGroup) root;
+                for (int i = 0; i < g.getChildCount(); i++) {
+                    lcApplyPartialHeader(g.getChildAt(i));
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
 
     private static void lcApplyNotificationOffset() {
         float offset = 0f;
@@ -1714,6 +1737,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                         float f = sh > 0 ? h / (float) sh : 0f;
                                         // Only the middle, partially expanded range is modified.
                                         lcPartialShade = f >= .30f && f <= .85f;
+                                        lcApplyPartialHeader(v);
+                                        synchronized (lcMotionHeaders) {
+                                            for (View header : lcMotionHeaders) lcApplyPartialHeader(header);
+                                        }
                                         lcApplyNotificationOffset();
                                         return true;
                                     }
@@ -1758,6 +1785,19 @@ public class MainHook implements IXposedHookLoadPackage {
                     "androidx.constraintlayout.motion.widget.MotionLayout", lp.classLoader);
             XposedBridge.log("LC partial: motion=" + (motion != null));
             if (motion != null) {
+                XposedBridge.hookAllConstructors(motion, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        View v = (View) p.thisObject;
+                        if (v.getClass().getName().contains("NoRemeasureMotionLayout")) {
+                            synchronized (lcMotionHeaders) {
+                                if (!lcMotionHeaders.contains(v)) {
+                                    lcMotionHeaders.add(v);
+                                    XposedBridge.log("LC partial: header captured");
+                                }
+                            }
+                        }
+                    }
+                });
                 XposedBridge.hookAllMethods(motion, "setProgress", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
                         if (!lcPartialShade) return;
