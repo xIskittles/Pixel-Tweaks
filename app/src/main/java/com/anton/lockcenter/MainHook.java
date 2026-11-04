@@ -1877,14 +1877,23 @@ public class MainHook implements IXposedHookLoadPackage {
                             // keep native QS mode for the whole open session so one swipe closes it
                             boolean collapsed = true;
                             try {
-                                Object n = lcNpvc;
-                                if (n != null) collapsed = (Boolean) XposedHelpers.callMethod(n, "isFullyCollapsed");
+                                Object lazy = XposedHelpers.getObjectField(p.thisObject, "mPanelViewControllerLazy");
+                                Object n = XposedHelpers.callMethod(lazy, "get");
+                                collapsed = (Boolean) XposedHelpers.callMethod(n, "isFullyCollapsed");
                             } catch (Throwable ignored) {}
                             if (!collapsed) { p.setResult(null); return; }
                         }
                         lcQsImmediate = on;
                     }
                 });
+                XC_MethodHook skipClose = new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        // while the right-half QS session is open, let the panel drag collapse it (follows finger)
+                        if (lcQsImmediate) { p.setResult(null); XposedBridge.log("LC qs: skipped " + p.method.getName()); }
+                    }
+                };
+                XposedBridge.hookAllMethods(qsx, "closeQs", skipClose);
+                XposedBridge.hookAllMethods(qsx, "closeQsIfPossible", skipClose);
                 XposedBridge.hookAllMethods(qsx, "setExpansionHeight", new XC_MethodHook() {
                     private long last;
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
