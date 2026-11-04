@@ -1465,7 +1465,93 @@ public class MainHook implements IXposedHookLoadPackage {
         });
     }
 
+    private static volatile android.view.ViewGroup lcPanel = null;
+    private static volatile android.view.View lcHeader = null;
+    private static final java.util.List<android.view.View> lcHeaders =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+    private static final java.util.List<android.view.View> lcScrims =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+    private static volatile android.view.View lcStack = null;
+    private static volatile boolean lcShiftInstalled = false;
+
+    private static void lcApplyShift() {
+        try {
+            android.view.ViewGroup p = lcPanel;
+            if (p == null) return;
+            float dp = p.getResources().getDisplayMetrics().density;
+            float shift = 84f * dp;
+            int screenH = p.getResources().getDisplayMetrics().heightPixels;
+            if (p.getHeight() < screenH * 0.25f) {
+                synchronized (lcScrims) {
+                    for (android.view.View sc : lcScrims) sc.setTranslationY(0f);
+                }
+                if (lcStack != null) lcStack.setTranslationY(0f);
+                return;
+            }
+            p.setTranslationY(0f);
+            synchronized (lcScrims) {
+                for (android.view.View sc : lcScrims) sc.setTranslationY(shift);
+            }
+            android.view.View st = lcStack;
+            if (st != null) st.setTranslationY(shift);
+        } catch (Throwable ignored) {}
+    }
+
     private static void initShadeHeaderForce(XC_LoadPackage.LoadPackageParam lp) {
+        try {
+            Class<?> panelC = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.NotificationPanelView", lp.classLoader);
+            if (panelC != null) {
+                XposedBridge.hookAllConstructors(panelC, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam param) {
+                        final android.view.View v = (android.view.View) param.thisObject;
+                        lcPanel = (android.view.ViewGroup) v;
+                        v.post(new Runnable() {
+                            @Override public void run() {
+                                try {
+                                    int sid = v.getResources().getIdentifier(
+                                            "notification_stack_scroller", "id", v.getContext().getPackageName());
+                                    if (sid != 0) lcStack = v.findViewById(sid);
+                                    XposedBridge.log("LC shift: stack=" + (lcStack != null));
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                        v.getViewTreeObserver().addOnPreDrawListener(
+                                new android.view.ViewTreeObserver.OnPreDrawListener() {
+                                    @Override public boolean onPreDraw() { lcApplyShift(); return true; }
+                                });
+                        XposedBridge.log("LC shift: panel captured");
+                    }
+                });
+            }
+        } catch (Throwable t) { XposedBridge.log("LC shift panel ERR " + t); }
+        try {
+            Class<?> scC = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.scrim.ScrimView", lp.classLoader);
+            if (scC != null) {
+                XposedBridge.hookAllConstructors(scC, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam param) {
+                        android.view.View v = (android.view.View) param.thisObject;
+                        synchronized (lcScrims) { lcScrims.add(v); }
+                    }
+                });
+                XposedBridge.log("LC shift: scrims hooked");
+            }
+        } catch (Throwable t) { XposedBridge.log("LC shift scrim ERR " + t); }
+        try {
+            Class<?> mlc = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.util.NoRemeasureMotionLayout", lp.classLoader);
+            if (mlc != null) {
+                XposedBridge.hookAllConstructors(mlc, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam param) {
+                        lcHeader = (android.view.View) param.thisObject;
+                        if (!lcHeaders.contains(lcHeader)) lcHeaders.add(lcHeader);
+                        XposedBridge.log("LC shift: header captured");
+                    }
+                });
+            }
+        } catch (Throwable t) { XposedBridge.log("LC shift header ERR " + t); }
+        XposedBridge.log("LC header: shift mode active");
         try {
             Class<?> base = XposedHelpers.findClassIfExists(
                     "androidx.constraintlayout.motion.widget.MotionLayout", lp.classLoader);
