@@ -1,4 +1,4 @@
-package com.anton.lockcenter;
+package com.anton.pixeltweaks;
 
 import android.graphics.drawable.Icon;
 import android.provider.Settings;

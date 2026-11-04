@@ -1,4 +1,4 @@
-package com.anton.lockcenter;
+package com.anton.pixeltweaks;
 
 import android.content.Context;
 import android.content.Intent;
@@ -76,6 +76,7 @@ public class MainActivity extends AppCompatActivity {
 
         // Блок док-панели рабочего стола
         addHeader(list, "🍏 Док-панель (Pixel Launcher)");
+        addFloatRow(list, "Ширина строки поиска в доке (множитель)", 0.7f, 1.6f, qsbScale, 0.01f, v -> qsbScale = v);
 
         // Кнопка перезагрузки лаунчера
         MaterialButton btnRestartLauncher = new MaterialButton(this);
@@ -222,7 +223,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void sendSettingsBroadcast() {
-        Intent intent = new Intent("com.anton.lockcenter.UPDATE_SETTINGS");
+        Intent intent = new Intent("com.anton.pixeltweaks.UPDATE_SETTINGS");
         intent.putExtra("clock_scale_x", clockScaleX);
         intent.putExtra("clock_scale_y", clockScaleY);
         intent.putExtra("date_extra_gap_px", dateExtraGapPx);

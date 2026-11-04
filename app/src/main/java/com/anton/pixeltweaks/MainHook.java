@@ -1,4 +1,4 @@
-package com.anton.lockcenter;
+package com.anton.pixeltweaks;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -127,11 +127,60 @@ public class MainHook implements IXposedHookLoadPackage {
         if ("com.android.systemui".equals(lpparam.packageName)) {
             initSystemUI(lpparam);
         }
+        if ("com.google.android.apps.nexuslauncher".equals(lpparam.packageName)) {
+            try {
+                initLauncherQsb(lpparam);
+            } catch (Throwable t) {
+                XposedBridge.log("PT qsb ERR " + t);
+            }
+        }
     }
 
     // =========================================================================
     //                            SYSTEM UI (LOCKSCREEN)
     // =========================================================================
+
+    /** Wi-Fi "off" glyph with a slash as thick as the mobile-data "off" glyph. */
+    static final class WifiOffThick extends android.graphics.drawable.Drawable {
+        private final android.graphics.drawable.Drawable inner;
+        private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        WifiOffThick(android.graphics.drawable.Drawable inner) {
+            this.inner = inner;
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            paint.setColor(0xFFFFFFFF);
+        }
+
+        @Override public void draw(android.graphics.Canvas c) {
+            inner.draw(c);
+            android.graphics.Rect b = getBounds();
+            float sc = b.width() / 960f;
+            paint.setStrokeWidth(97f * sc);
+            c.drawLine(b.left + 112f * sc, b.top + 140f * sc, b.left + 790f * sc, b.top + 818f * sc, paint);
+        }
+        @Override protected void onBoundsChange(android.graphics.Rect r) { inner.setBounds(r); }
+        @Override public int getIntrinsicWidth() { return inner.getIntrinsicWidth(); }
+        @Override public int getIntrinsicHeight() { return inner.getIntrinsicHeight(); }
+        @Override public void setAlpha(int a) { inner.setAlpha(a); paint.setAlpha(a); }
+        @Override public void setColorFilter(android.graphics.ColorFilter f) { inner.setColorFilter(f); paint.setColorFilter(f); }
+        @Override public void setTint(int c) { inner.setTint(c); paint.setColor(c); }
+        @Override public void setTintList(android.content.res.ColorStateList t) {
+            inner.setTintList(t);
+            if (t != null) paint.setColor(t.getColorForState(getState(), t.getDefaultColor()));
+        }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        @Override public android.graphics.drawable.Drawable.ConstantState getConstantState() {
+            final android.graphics.drawable.Drawable.ConstantState cs = inner.getConstantState();
+            if (cs == null) return null;
+            return new android.graphics.drawable.Drawable.ConstantState() {
+                @Override public android.graphics.drawable.Drawable newDrawable() {
+                    return new WifiOffThick(cs.newDrawable().mutate());
+                }
+                @Override public int getChangingConfigurations() { return 0; }
+            };
+        }
+    }
 
     private static void reorderMobileType(View v) {
         try {
@@ -593,10 +642,18 @@ public class MainHook implements IXposedHookLoadPackage {
                         int id = ctx.getResources().getIdentifier(
                                 "ic_signal_wifi_off", "drawable", "com.android.systemui");
                         if (id == 0) return;
-                        Class<?> resIcon = XposedHelpers.findClass(
-                                "com.android.systemui.qs.tileimpl.QSTileImpl$ResourceIcon",
-                                param.thisObject.getClass().getClassLoader());
-                        Object icon = XposedHelpers.callStaticMethod(resIcon, "get", id);
+                        ClassLoader tcl = param.thisObject.getClass().getClassLoader();
+                        Object icon;
+                        try {
+                            Class<?> drIcon = XposedHelpers.findClass(
+                                    "com.android.systemui.qs.tileimpl.QSTileImpl$DrawableIcon", tcl);
+                            android.graphics.drawable.Drawable base = ctx.getDrawable(id).mutate();
+                            icon = XposedHelpers.newInstance(drIcon, new WifiOffThick(base));
+                        } catch (Throwable t) {
+                            Class<?> resIcon = XposedHelpers.findClass(
+                                    "com.android.systemui.qs.tileimpl.QSTileImpl$ResourceIcon", tcl);
+                            icon = XposedHelpers.callStaticMethod(resIcon, "get", id);
+                        }
                         XposedHelpers.setObjectField(st, "icon", icon);
                         XposedBridge.log("LC tile: wifi off icon applied");
                     } catch (Throwable t) {
@@ -852,7 +909,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 baseWidths.clear();
                                 hs.requestLayout();
                             }
-                        }, new android.content.IntentFilter("com.anton.lockcenter.UPDATE_SETTINGS"),
+                        }, new android.content.IntentFilter("com.anton.pixeltweaks.UPDATE_SETTINGS"),
                                 android.content.Context.RECEIVER_EXPORTED);
                     } catch (Throwable ignored) {}
                 }
@@ -1701,6 +1758,9 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static volatile Object lcCtrl = null;
+    private static volatile boolean lcPending, lcFired, lcDownQsOpen;
+    private static volatile float lcDownX, lcDownY;
+    private static volatile long lcBlockClicksUntil = 0;
     private static volatile boolean lcBypass = false;
     private static volatile boolean lcQsImmediate = false;
     private static volatile Object lcNpvc = null;
@@ -1917,6 +1977,23 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) { XposedBridge.log("LC qs dbg ERR " + t); }
 
         try {
+            XposedBridge.hookAllMethods(View.class, "performClick", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (System.currentTimeMillis() > lcBlockClicksUntil) return;
+                    String n = p.thisObject.getClass().getName();
+                    if (n.contains("Clock") || n.contains("VariableDateView") || n.contains("DateView")) p.setResult(false);
+                }
+            });
+            XposedBridge.hookAllMethods(View.class, "performLongClick", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (System.currentTimeMillis() > lcBlockClicksUntil) return;
+                    String n = p.thisObject.getClass().getName();
+                    if (n.contains("Clock") || n.contains("VariableDateView") || n.contains("DateView")) p.setResult(false);
+                }
+            });
+        } catch (Throwable t) { XposedBridge.log("LC click guard ERR " + t); }
+
+        try {
             Class<?> npc = XposedHelpers.findClassIfExists(
                     "com.android.systemui.shade.NotificationPanelViewController", lp.classLoader);
             if (npc != null) {
@@ -1935,32 +2012,50 @@ public class MainHook implements IXposedHookLoadPackage {
                         try {
                             android.view.MotionEvent e = null;
                             for (Object a : p.args) if (a instanceof android.view.MotionEvent) e = (android.view.MotionEvent) a;
-                            if (e == null || e.getActionMasked() != android.view.MotionEvent.ACTION_DOWN) return;
+                            if (e == null) return;
+                            int act = e.getActionMasked();
                             Object npvc = XposedHelpers.getObjectField(p.thisObject, "this$0");
-                            if (!(Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed")) {
-                                // shade already open: top-right -> full QS, top-left (from full QS) -> half panel
+                            boolean collapsedNow = (Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed");
+                            if (!collapsedNow || lcPending) {
                                 float dens = android.content.res.Resources.getSystem().getDisplayMetrics().density;
-                                if (e.getRawY() > 80f * dens) return;
                                 int ww = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
                                 Object q = XposedHelpers.getObjectField(npvc, "mQsController");
-                                boolean qsOpen = (Boolean) XposedHelpers.callMethod(q, "getExpanded");
-                                XposedBridge.log("LC qs: DOWN in open shade x=" + e.getRawX() + " y=" + e.getRawY() + " qsOpen=" + qsOpen);
-                                if (e.getRawX() >= ww / 2f && !qsOpen) {
-                                    lcQsImmediate = true;
-                                    XposedHelpers.callMethod(q, "setExpandImmediate", true);
-                                    lcBypass = true;
-                                    try { XposedHelpers.callMethod(npvc, "expandToQs"); } finally { lcBypass = false; }
-                                    XposedBridge.log("LC qs: top-right in half panel -> full QS");
-                                    if (p.method.getName().equals("onTouchEvent")) p.setResult(true);
-                                } else if (e.getRawX() < ww / 2f && qsOpen) {
-                                    lcQsImmediate = false;
-                                    XposedHelpers.callMethod(q, "setExpandImmediate", false);
-                                    XposedHelpers.callMethod(q, "closeQs");
-                                    XposedBridge.log("LC qs: top-left in full QS -> half panel");
+                                if (act == android.view.MotionEvent.ACTION_DOWN) {
+                                    lcPending = false; lcFired = false;
+                                    if (collapsedNow || e.getRawY() > 80f * dens) return;
+                                    lcPending = true;
+                                    lcDownX = e.getRawX(); lcDownY = e.getRawY();
+                                    lcDownQsOpen = (Boolean) XposedHelpers.callMethod(q, "getExpanded");
+                                    return;
+                                }
+                                if (act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL) {
+                                    lcPending = false;
+                                    if (lcFired) lcBlockClicksUntil = System.currentTimeMillis() + 600;
+                                    lcFired = false;
+                                    return;
+                                }
+                                if (act == android.view.MotionEvent.ACTION_MOVE && lcPending && !lcFired) {
+                                    float dy = e.getRawY() - lcDownY, dx = Math.abs(e.getRawX() - lcDownX);
+                                    if (dy < 28f * dens || dx > dy) return;   // must be a deliberate downward swipe
+                                    lcFired = true;
+                                    lcBlockClicksUntil = System.currentTimeMillis() + 1500;
+                                    if (lcDownX >= ww / 2f && !lcDownQsOpen) {
+                                        lcQsImmediate = true;
+                                        XposedHelpers.callMethod(q, "setExpandImmediate", true);
+                                        lcBypass = true;
+                                        try { XposedHelpers.callMethod(npvc, "expandToQs"); } finally { lcBypass = false; }
+                                        XposedBridge.log("LC qs: swipe top-right in half panel -> full QS");
+                                    } else if (lcDownX < ww / 2f && lcDownQsOpen) {
+                                        lcQsImmediate = false;
+                                        XposedHelpers.callMethod(q, "setExpandImmediate", false);
+                                        XposedHelpers.callMethod(q, "closeQs");
+                                        XposedBridge.log("LC qs: swipe top-left in full QS -> half panel");
+                                    }
                                     if (p.method.getName().equals("onTouchEvent")) p.setResult(true);
                                 }
                                 return;
                             }
+                            if (act != android.view.MotionEvent.ACTION_DOWN) return;
                             int w = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
                             if (e.getRawX() < w / 2f) return;
                             Object qs = XposedHelpers.getObjectField(npvc, "mQsController");
@@ -2027,6 +2122,41 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log("LC shade expansion ERR " + t);
         }
+    }
+
+    // ======== Pixel Launcher: dock search width (only this, nothing else) ========
+    private static final java.util.WeakHashMap<View, int[]> qsbBase = new java.util.WeakHashMap<>();
+
+    private static void initLauncherQsb(XC_LoadPackage.LoadPackageParam lp) {
+        Class<?> ose = XposedHelpers.findClassIfExists("com.android.launcher3.qsb.OseWidgetView", lp.classLoader);
+        if (ose == null) {
+            XposedBridge.log("PT qsb: OseWidgetView not found");
+            return;
+        }
+        XposedBridge.hookAllMethods(ose, "onLayout", new XC_MethodHook() {
+            @Override protected void afterHookedMethod(MethodHookParam p) {
+                try {
+                    View v = (View) p.thisObject;
+                    int w = v.getWidth();
+                    if (w <= 0) return;
+                    int[] b = qsbBase.get(v);
+                    // b = {naturalWidth, naturalLeft, top, height, lastAppliedWidth}
+                    if (b == null || (w != b[4] && w != b[0])) {
+                        b = new int[]{w, v.getLeft(), v.getTop(), v.getHeight(), w};
+                        qsbBase.put(v, b);
+                    }
+                    float sc = readQsbScale(v.getContext());
+                    int screen = v.getResources().getDisplayMetrics().widthPixels;
+                    int want = Math.min(Math.round(b[0] * sc), Math.round(screen * 0.96f));
+                    if (want == w) return;
+                    int cx = b[1] + b[0] / 2;
+                    int left = cx - want / 2;
+                    v.layout(left, b[2], left + want, b[2] + b[3]);
+                    b[4] = want;
+                } catch (Throwable ignored) {}
+            }
+        });
+        XposedBridge.log("PT qsb: OseWidgetView.onLayout hooked");
     }
 
     private static void initSystemUI(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -2108,7 +2238,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static void registerReceiverIfNeeded(Context context) {
         if (receiverRegistered || context == null) return;
         try {
-            IntentFilter filter = new IntentFilter("com.anton.lockcenter.UPDATE_SETTINGS");
+            IntentFilter filter = new IntentFilter("com.anton.pixeltweaks.UPDATE_SETTINGS");
             context.registerReceiver(new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context ctx, Intent intent) {

@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.anton.lockcenter'
+    namespace 'com.anton.pixeltweaks'
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.anton.lockcenter"
+        applicationId "com.anton.pixeltweaks"
         minSdk 31
         targetSdk 35
         versionCode 1
