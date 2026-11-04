@@ -1,0 +1,373 @@
+package com.anton.lockcenter;
+
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.materialswitch.MaterialSwitch;
+import com.google.android.material.slider.Slider;
+
+import java.io.File;
+import java.io.FileWriter;
+import java.util.Locale;
+
+public class MainActivity extends AppCompatActivity {
+
+    private SharedPreferences prefs;
+
+    // Экран блокировки
+    private float clockScaleX;
+    private float clockScaleY;
+    private int dateExtraGapPx;
+    private float dateScaleX;
+    private float dateScaleY;
+    private float largeClockScaleX;
+    private float largeClockScaleY;
+    private int cardTopMarginPx;
+    private int notifTopMarginPx;
+    private float qsbScale = 1.05f;
+
+    // Док-панель (Pixel Launcher)
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        prefs = getSharedPreferences("lock_center_prefs", Context.MODE_PRIVATE);
+
+        // Твои идеальные значения по умолчанию
+        clockScaleX = prefs.getFloat("clock_scale_x", 1.60f);
+        clockScaleY = prefs.getFloat("clock_scale_y", 1.30f);
+        dateExtraGapPx = prefs.getInt("date_extra_gap_px", -20);
+        dateScaleX = prefs.getFloat("date_scale_x", 1.30f);
+        dateScaleY = prefs.getFloat("date_scale_y", 1.15f);
+        largeClockScaleX = prefs.getFloat("large_clock_scale_x", 1.35f);
+        largeClockScaleY = prefs.getFloat("large_clock_scale_y", 1.05f);
+        cardTopMarginPx = prefs.getInt("card_top_margin_px", -50);
+        notifTopMarginPx = prefs.getInt("notif_top_margin_px", 0);
+        qsbScale = prefs.getFloat("qsb_scale", 1.05f);
+
+        // Док
+
+        LinearLayout list = findViewById(R.id.settings_list);
+
+        // Блок экрана блокировки
+        addHeader(list, "🔒 Экран блокировки");
+        addFloatRow(list, "Ширина маленьких часов", 0.5f, 3.0f, clockScaleX, 0.05f, v -> clockScaleX = v);
+        addFloatRow(list, "Высота маленьких часов", 0.5f, 3.0f, clockScaleY, 0.05f, v -> clockScaleY = v);
+        addIntRow(list, "Отступ даты от часов (px)", -50, 150, dateExtraGapPx, v -> dateExtraGapPx = v);
+        addFloatRow(list, "Ширина даты", 0.5f, 2.5f, dateScaleX, 0.05f, v -> dateScaleX = v);
+        addFloatRow(list, "Высота даты", 0.5f, 2.5f, dateScaleY, 0.05f, v -> dateScaleY = v);
+        addFloatRow(list, "Ширина больших часов", 0.5f, 3.0f, largeClockScaleX, 0.05f, v -> largeClockScaleX = v);
+        addFloatRow(list, "Высота больших часов", 0.5f, 3.0f, largeClockScaleY, 0.05f, v -> largeClockScaleY = v);
+        addIntRow(list, "Отступ плашки фонарика от даты (px)", -80, 80, cardTopMarginPx, v -> cardTopMarginPx = v);
+        addIntRow(list, "Отступ уведомлений от даты (px)", -100, 100, notifTopMarginPx, v -> notifTopMarginPx = v);
+
+        // Блок док-панели рабочего стола
+        addHeader(list, "🍏 Док-панель (Pixel Launcher)");
+
+        // Кнопка перезагрузки лаунчера
+        MaterialButton btnRestartLauncher = new MaterialButton(this);
+        btnRestartLauncher.setText("Перезагрузить Pixel Launcher (Root)");
+        btnRestartLauncher.setIconResource(android.R.drawable.ic_menu_rotate);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        blp.setMargins(0, 16, 0, 24);
+        btnRestartLauncher.setLayoutParams(blp);
+        btnRestartLauncher.setOnClickListener(v -> {
+            saveConfigToSystem();
+            Toast.makeText(this, "Перезагрузка Pixel Launcher...", Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                try {
+                    Runtime.getRuntime().exec(new String[]{"su", "-c", "pkill -f com.google.android.apps.nexuslauncher"}).waitFor();
+                } catch (Throwable ignored) {}
+            }).start();
+        });
+        list.addView(btnRestartLauncher);
+
+        // Кнопки верхнего блока
+        MaterialButton btnSave = findViewById(R.id.btn_save);
+        btnSave.setOnClickListener(v -> {
+            saveConfigToSystem();
+            sendSettingsBroadcast();
+            Toast.makeText(this, "Настройки сохранены!", Toast.LENGTH_SHORT).show();
+        });
+
+        MaterialButton btnRestart = findViewById(R.id.btn_restart_sysui);
+        btnRestart.setOnClickListener(v -> {
+            Toast.makeText(this, "Перезагрузка SystemUI...", Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                saveConfigToSystemSync();
+                try {
+                    Thread.sleep(150);
+                    Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "pkill -f com.android.systemui || killall com.android.systemui"});
+                    p.waitFor();
+                } catch (Throwable t) {
+                    runOnUiThread(() -> Toast.makeText(this, "Ошибка Root: " + t.getMessage(), Toast.LENGTH_LONG).show());
+                }
+            }).start();
+        });
+    }
+
+    private void addHeader(LinearLayout parent, String title) {
+        TextView tv = new TextView(this);
+        tv.setText(title);
+        tv.setTextSize(18f);
+        tv.setTypeface(null, android.graphics.Typeface.BOLD);
+        tv.setPadding(8, 28, 8, 16);
+        parent.addView(tv);
+    }
+
+    private interface OnCheckedListener {
+        void onCheck(boolean isChecked);
+    }
+
+    private void addSwitchRow(LinearLayout parent, String title, boolean initial, OnCheckedListener listener) {
+        LinearLayout content = createCard(parent, title);
+        MaterialSwitch s = new MaterialSwitch(this);
+        s.setChecked(initial);
+        s.setText(initial ? "Включено" : "Выключено");
+        s.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            s.setText(isChecked ? "Включено" : "Выключено");
+            listener.onCheck(isChecked);
+        });
+        content.addView(s);
+    }
+
+    private String buildConfigString() {
+        return "clock_scale_x=" + clockScaleX
+                + ",clock_scale_y=" + clockScaleY
+                + ",date_extra_gap_px=" + dateExtraGapPx
+                + ",date_scale_x=" + dateScaleX
+                + ",date_scale_y=" + dateScaleY
+                + ",large_clock_scale_x=" + largeClockScaleX
+                + ",large_clock_scale_y=" + largeClockScaleY
+                + ",card_top_margin_px=" + cardTopMarginPx
+                + ",notif_top_margin_px=" + notifTopMarginPx
+                + ",qsb_scale=" + qsbScale
+;
+    }
+
+    private void pushLiveConfig() {
+        final String cfg = buildConfigString();
+        new Thread(() -> {
+            try {
+                Runtime.getRuntime().exec(new String[]{"su", "-c",
+                        "settings put global lockcenter_cfg '" + cfg + "'"}).waitFor();
+            } catch (Throwable ignored) {}
+        }).start();
+        sendSettingsBroadcast();
+    }
+
+    private void saveConfigToSystem() {
+        prefs.edit()
+                .putFloat("clock_scale_x", clockScaleX)
+                .putFloat("clock_scale_y", clockScaleY)
+                .putInt("date_extra_gap_px", dateExtraGapPx)
+                .putFloat("date_scale_x", dateScaleX)
+                .putFloat("date_scale_y", dateScaleY)
+                .putFloat("large_clock_scale_x", largeClockScaleX)
+                .putFloat("large_clock_scale_y", largeClockScaleY)
+                .putInt("card_top_margin_px", cardTopMarginPx)
+                .putInt("notif_top_margin_px", notifTopMarginPx)
+                .putFloat("qsb_scale", qsbScale)
+                .apply();
+
+        new Thread(this::saveConfigToSystemSync).start();
+    }
+
+    private synchronized void saveConfigToSystemSync() {
+        String cfgOneLine = buildConfigString();
+
+        String fileContent = "clock_scale_x=" + clockScaleX + "\n"
+                + "clock_scale_y=" + clockScaleY + "\n"
+                + "date_extra_gap_px=" + dateExtraGapPx + "\n"
+                + "date_scale_x=" + dateScaleX + "\n"
+                + "date_scale_y=" + dateScaleY + "\n"
+                + "large_clock_scale_x=" + largeClockScaleX + "\n"
+                + "large_clock_scale_y=" + largeClockScaleY + "\n"
+                + "card_top_margin_px=" + cardTopMarginPx + "\n"
+                + "notif_top_margin_px=" + notifTopMarginPx + "\n"
+                + "qsb_scale=" + qsbScale + "\n"
+;
+
+        try {
+            Runtime.getRuntime().exec(new String[]{"su", "-c", "settings put global lockcenter_cfg \"" + cfgOneLine + "\""}).waitFor();
+
+            File localFile = new File(getFilesDir(), "lockcenter.conf");
+            try (FileWriter fw = new FileWriter(localFile)) {
+                fw.write(fileContent);
+                fw.flush();
+            }
+            String src = localFile.getAbsolutePath();
+            String cmd = "mkdir -p /data/user_de/0/com.android.systemui && "
+                    + "cp " + src + " /data/user_de/0/com.android.systemui/lockcenter.conf && "
+                    + "chmod 666 /data/user_de/0/com.android.systemui/lockcenter.conf && "
+                    + "mkdir -p /data/data/com.android.systemui && "
+                    + "cp " + src + " /data/data/com.android.systemui/lockcenter.conf && "
+                    + "chmod 666 /data/data/com.android.systemui/lockcenter.conf";
+            Runtime.getRuntime().exec(new String[]{"su", "-c", cmd}).waitFor();
+        } catch (Throwable ignored) {}
+    }
+
+    private void sendSettingsBroadcast() {
+        Intent intent = new Intent("com.anton.lockcenter.UPDATE_SETTINGS");
+        intent.putExtra("clock_scale_x", clockScaleX);
+        intent.putExtra("clock_scale_y", clockScaleY);
+        intent.putExtra("date_extra_gap_px", dateExtraGapPx);
+        intent.putExtra("date_scale_x", dateScaleX);
+        intent.putExtra("date_scale_y", dateScaleY);
+        intent.putExtra("large_clock_scale_x", largeClockScaleX);
+        intent.putExtra("large_clock_scale_y", largeClockScaleY);
+        intent.putExtra("card_top_margin_px", cardTopMarginPx);
+        intent.putExtra("notif_top_margin_px", notifTopMarginPx);
+
+        // В SystemUI
+        Intent intentSys = new Intent(intent);
+        intentSys.setPackage("com.android.systemui");
+        sendBroadcast(intentSys);
+
+        // В Pixel Launcher
+        Intent intentLauncher = new Intent(intent);
+        intentLauncher.setPackage("com.google.android.apps.nexuslauncher");
+        sendBroadcast(intentLauncher);
+    }
+
+    private interface OnFloatChanged {
+        void onVal(float val);
+    }
+
+    private interface OnIntChanged {
+        void onVal(int val);
+    }
+
+    private void addFloatRow(LinearLayout parent, String title, float min, float max, float current, float step, OnFloatChanged listener) {
+        LinearLayout content = createCard(parent, title);
+
+        EditText input = new EditText(this);
+        input.setText(String.format(Locale.US, "%.2f", current));
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+
+        Slider slider = new Slider(this);
+        slider.setValueFrom(min);
+        slider.setValueTo(max);
+        slider.setStepSize(step);
+        float safeCurrent = Math.max(min, Math.min(max, current));
+        slider.setValue(safeCurrent);
+
+        final boolean[] internal = {false};
+
+        final android.os.Handler liveHandler = new android.os.Handler(
+                android.os.Looper.getMainLooper());
+        final Runnable[] livePending = new Runnable[1];
+        slider.addOnChangeListener((s, value, fromUser) -> {
+            if (fromUser) {
+                internal[0] = true;
+                input.setText(String.format(Locale.US, "%.2f", value));
+                listener.onVal(value);
+                internal[0] = false;
+                if (livePending[0] != null) liveHandler.removeCallbacks(livePending[0]);
+                livePending[0] = this::pushLiveConfig;
+                liveHandler.postDelayed(livePending[0], 500);
+            }
+        });
+
+        input.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                if (internal[0]) return;
+                try {
+                    float v = Float.parseFloat(s.toString());
+                    if (v >= min && v <= max) {
+                        slider.setValue(v);
+                        listener.onVal(v);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        });
+
+        content.addView(input);
+        content.addView(slider);
+    }
+
+    private void addIntRow(LinearLayout parent, String title, int min, int max, int current, OnIntChanged listener) {
+        LinearLayout content = createCard(parent, title);
+
+        EditText input = new EditText(this);
+        input.setText(String.valueOf(current));
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
+
+        Slider slider = new Slider(this);
+        slider.setValueFrom(min);
+        slider.setValueTo(max);
+        slider.setStepSize(1f);
+        float safeCurrent = Math.max(min, Math.min(max, (float) current));
+        slider.setValue(safeCurrent);
+
+        final boolean[] internal = {false};
+
+        slider.addOnChangeListener((s, value, fromUser) -> {
+            if (fromUser) {
+                internal[0] = true;
+                int val = Math.round(value);
+                input.setText(String.valueOf(val));
+                listener.onVal(val);
+                internal[0] = false;
+            }
+        });
+
+        input.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                if (internal[0]) return;
+                try {
+                    int v = Integer.parseInt(s.toString());
+                    if (v >= min && v <= max) {
+                        slider.setValue((float) v);
+                        listener.onVal(v);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        });
+
+        content.addView(input);
+        content.addView(slider);
+    }
+
+    private LinearLayout createCard(LinearLayout parent, String title) {
+        com.google.android.material.card.MaterialCardView card = new com.google.android.material.card.MaterialCardView(this);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        clp.setMargins(0, 0, 0, 24);
+        card.setLayoutParams(clp);
+        card.setCardElevation(2f);
+        card.setRadius(28f);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(32, 24, 32, 16);
+
+        TextView tv = new TextView(this);
+        tv.setText(title);
+        tv.setTextSize(16f);
+        tv.setTypeface(null, android.graphics.Typeface.BOLD);
+        content.addView(tv);
+
+        card.addView(content);
+        parent.addView(card);
+        return content;
+    }
+}
