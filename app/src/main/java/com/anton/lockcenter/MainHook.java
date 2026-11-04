@@ -1481,7 +1481,8 @@ public class MainHook implements IXposedHookLoadPackage {
             float dp = p.getResources().getDisplayMetrics().density;
             float shift = 84f * dp;
             int screenH = p.getResources().getDisplayMetrics().heightPixels;
-            if (p.getHeight() < screenH * 0.25f) {
+            float frac = screenH > 0 ? (float) p.getHeight() / screenH : 0f;
+            if (frac < 0.30f || frac > 0.85f) {
                 synchronized (lcScrims) {
                     for (android.view.View sc : lcScrims) sc.setTranslationY(0f);
                 }
