@@ -1704,6 +1704,30 @@ public class MainHook implements IXposedHookLoadPackage {
     private static boolean lcStackHooked;
     private static long lcLastDateLog = 0;
 
+    private static final java.util.List<View> lcScrimViews =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<View>());
+
+    private static void lcApplyShift(float k) {
+        float px = 0f;
+        synchronized (lcNotifStacks) {
+            if (!lcNotifStacks.isEmpty())
+                px = 56f * lcNotifStacks.get(0).getResources().getDisplayMetrics().density * k;
+            for (View v : lcNotifStacks) {
+                if (v.getTranslationY() != px) v.setTranslationY(px);
+            }
+        }
+        synchronized (lcScrimViews) {
+            for (View v : lcScrimViews) {
+                boolean plate = false;
+                try {
+                    plate = "scrim_notifications".equals(v.getResources().getResourceEntryName(v.getId()));
+                } catch (Throwable ignored) {}
+                float t = plate ? px : 0f;
+                if (plate && v.getTranslationY() != t) v.setTranslationY(t);
+            }
+        }
+    }
+
     private static void lcSetPartial(boolean active) {
         if (lcPartialActive == active) return;
         lcPartialActive = active;
@@ -1716,15 +1740,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 lcSetClip(h, !active, 2);
             }
         }
-        float shiftPx = 0f;
-        synchronized (lcNotifStacks) {
-            if (active && !lcNotifStacks.isEmpty()) {
-                shiftPx = 68f * lcNotifStacks.get(0).getResources().getDisplayMetrics().density;
-            }
-            for (View s : lcNotifStacks) {
-                try { s.setTranslationY(shiftPx); } catch (Throwable ignored) {}
-            }
-        }
         XposedBridge.log("LC shade: partial=" + active);
     }
 
@@ -1735,7 +1750,10 @@ public class MainHook implements IXposedHookLoadPackage {
             if (c != null && header.isShown()) {
                 float qs = XposedHelpers.getFloatField(c, "qsExpandedFraction");
                 float sh = XposedHelpers.getFloatField(c, "shadeExpandedFraction");
-                on = qs < 0.02f && sh > 0.9f;
+                on = sh > 0.02f;
+                lcApplyShift(1f - Math.min(1f, Math.max(0f, qs)));
+            } else {
+                lcApplyShift(0f);
             }
         } catch (Throwable ignored) {}
         lcSetPartial(on);
@@ -1828,6 +1846,17 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log("LC shade stack ERR " + t);
         }
+
+        try {
+            Class<?> sc = XposedHelpers.findClassIfExists("com.android.systemui.scrim.ScrimView", lp.classLoader);
+            if (sc != null) {
+                XposedBridge.hookAllConstructors(sc, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        synchronized (lcScrimViews) { lcScrimViews.add((View) p.thisObject); }
+                    }
+                });
+            }
+        } catch (Throwable t) { XposedBridge.log("LC shade scrim ERR " + t); }
 
         try {
             Class<?> hc = XposedHelpers.findClassIfExists(
