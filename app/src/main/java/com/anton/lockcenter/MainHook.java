@@ -1848,6 +1848,31 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         try {
+            Class<?> qsc = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.QuickSettingsControllerImpl", lp.classLoader);
+            if (qsc != null) {
+                XposedBridge.hookAllMethods(qsc, "isOpenQsEvent", new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            if (Boolean.TRUE.equals(p.getResult())) return;
+                            android.view.MotionEvent e = (android.view.MotionEvent) p.args[0];
+                            if (e.getActionMasked() != android.view.MotionEvent.ACTION_DOWN) return;
+                            Object c = lcCtrl;
+                            float sh = c == null ? 0f : XposedHelpers.getFloatField(c, "shadeExpandedFraction");
+                            if (sh > 0.05f) return;
+                            int w = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
+                            if (e.getRawX() >= w / 2f) {
+                                p.setResult(true);
+                                XposedBridge.log("LC qs: right-half down -> native QS expand x=" + e.getRawX());
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+                XposedBridge.log("LC qs: isOpenQsEvent hooked");
+            }
+        } catch (Throwable t) { XposedBridge.log("LC qs hook ERR " + t); }
+
+        try {
             Class<?> sc = XposedHelpers.findClassIfExists("com.android.systemui.scrim.ScrimView", lp.classLoader);
             if (sc != null) {
                 XposedBridge.hookAllConstructors(sc, new XC_MethodHook() {
