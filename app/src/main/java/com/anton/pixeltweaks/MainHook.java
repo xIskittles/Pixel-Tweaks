@@ -1868,6 +1868,25 @@ public class MainHook implements IXposedHookLoadPackage {
     private static boolean lcDragArmed, lcDragging;
     private static float lcDrag0X, lcDrag0Y, lcDragH0;
     private static android.view.VelocityTracker lcVt;
+    private static float lcLastH;
+    private static final long[] lcT = new long[8];
+    private static final float[] lcY = new float[8];
+    private static int lcN;
+
+    private static void lcSample(android.view.MotionEvent e) {
+        int i = lcN++ % 8; lcT[i] = e.getEventTime(); lcY[i] = e.getRawY();
+    }
+
+    private static float lcVelocity() {
+        int n = Math.min(lcN, 8); if (n < 2) return 0f;
+        int newest = (lcN - 1) % 8; long tn = lcT[newest]; float yn = lcY[newest];
+        for (int k = 2; k <= n; k++) {
+            int idx = ((lcN - k) % 8 + 8) % 8;
+            if (tn - lcT[idx] >= 40) return (yn - lcY[idx]) * 1000f / (tn - lcT[idx]);
+        }
+        int idx = ((lcN - n) % 8 + 8) % 8; long dt = tn - lcT[idx];
+        return dt > 0 ? (yn - lcY[idx]) * 1000f / dt : 0f;
+    }
 
     private static boolean lcHandleQsDrag(XC_MethodHook.MethodHookParam p, android.view.MotionEvent e, Object npvc) {
         try {
@@ -1882,13 +1901,11 @@ public class MainHook implements IXposedHookLoadPackage {
                 boolean qsOpen = (Boolean) XposedHelpers.callMethod(q, "getExpanded");
                 if (!collapsed && qsOpen && e.getRawY() > 80f * dens) {
                     lcDragArmed = true; lcDrag0X = e.getRawX(); lcDrag0Y = e.getRawY();
-                    if (lcVt != null) lcVt.recycle();
-                    lcVt = android.view.VelocityTracker.obtain();
-                    lcVt.addMovement(e);
+                    lcN = 0; lcSample(e);
                 }
                 return false;
             }
-            if (lcVt != null && (lcDragArmed || lcDragging)) lcVt.addMovement(e);
+            if (lcDragArmed || lcDragging) lcSample(e);
             if (lcDragArmed && !lcDragging && isTouch) {
                 // stock tracking must not run in parallel with ours (it caused the flicker)
                 if (act == android.view.MotionEvent.ACTION_MOVE) {
@@ -1905,6 +1922,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (dy < -18f * dens && dx < -dy) {
                     lcDragging = true;
                     lcDragH0 = XposedHelpers.getFloatField(npvc, "mExpandedHeight");
+                    lcLastH = lcDragH0;
                     lcDrag0Y = e.getRawY();
                 } else {
                     return false;
@@ -1913,21 +1931,22 @@ public class MainHook implements IXposedHookLoadPackage {
             if (!lcDragging) return false;
             if (act == android.view.MotionEvent.ACTION_MOVE) {
                 float h = Math.max(0f, lcDragH0 + Math.min(0f, e.getRawY() - lcDrag0Y));
+                lcLastH = h;
                 XposedHelpers.callMethod(npvc, "setExpandedHeight", h);
                 p.setResult(true);
                 return true;
             }
             if (act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL) {
-                float vy = 0f;
-                if (lcVt != null) { lcVt.computeCurrentVelocity(1000); vy = lcVt.getYVelocity(); lcVt.recycle(); lcVt = null; }
-                float cur = XposedHelpers.getFloatField(npvc, "mExpandedHeight");
-                boolean collapse = act == android.view.MotionEvent.ACTION_UP && (cur < lcDragH0 * 0.8f || vy < -700f);
+                float vy = lcVelocity();
+                XposedBridge.log("PT: release samples=" + Math.min(lcN, 8) + " vy=" + vy);
+                float cur = lcLastH;
+                boolean collapse = (cur < lcDragH0 * 0.7f || vy < -600f);
                 lcDragging = false; lcDragArmed = false;
                 lcFlingGuard = System.currentTimeMillis();
                 if (collapse) {
-                    XposedHelpers.callMethod(npvc, "fling", Math.min(vy, -1200f), 1.0f, false, false);
+                    XposedHelpers.callMethod(npvc, "fling", Math.max(-3200f, Math.min(vy, -1400f)), 1.0f, false, false);
                 } else {
-                    XposedHelpers.callMethod(npvc, "fling", 1500f, 1.0f, true, false);
+                    XposedHelpers.callMethod(npvc, "fling", Math.max(1400f, Math.min(vy, 3200f)), 1.0f, true, false);
                 }
                 p.setResult(true);
                 XposedBridge.log("PT: own QS close drag end collapse=" + collapse + " vy=" + vy);
@@ -2079,7 +2098,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     private long last;
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
                         long n = System.currentTimeMillis();
-                        if (n - last > 70) { last = n; XposedBridge.log("PT dbg: expandedHeight=" + p.args[0]); }
+                        if (n - last > 12) { last = n; XposedBridge.log("PT dbg: expandedHeight=" + p.args[0]); }
+                        if (lcDragging && p.args[0] instanceof Float && ((Float) p.args[0]) > lcLastH + 200f) {
+                            StringBuilder sb = new StringBuilder();
+                            StackTraceElement[] st = new Throwable().getStackTrace();
+                            for (int i = 3; i < Math.min(st.length, 13); i++) sb.append(st[i].getClassName().replaceAll(".*\\.", "")).append('.').append(st[i].getMethodName()).append(" < ");
+                            XposedBridge.log("PT dbg: STOCKSET " + p.args[0] + " via " + sb);
+                        }
                         if (p.args[0] instanceof Float && ((Float) p.args[0]) == 0f && lcQsImmediate) {
                             try {
                                 float cur = XposedHelpers.getFloatField(p.thisObject, "mExpandedHeight");
@@ -2097,6 +2122,12 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                             } catch (Throwable t) { XposedBridge.log("PT zero guard ERR " + t); }
                         }
+                    }
+                });
+                XposedBridge.hookAllMethods(npd, "updateExpandedHeightToMaxHeight", new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        // stock snaps the shade to full height whenever a row changes size: never while we drag
+                        if (lcDragging) p.setResult(null);
                     }
                 });
                 for (String m : new String[]{"flingToHeight", "fling", "collapse", "instantCollapse", "animateCloseQs"}) {
