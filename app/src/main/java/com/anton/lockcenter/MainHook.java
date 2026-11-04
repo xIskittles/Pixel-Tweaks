@@ -1701,6 +1701,7 @@ public class MainHook implements IXposedHookLoadPackage {
         try {
             final Class<?> panel = XposedHelpers.findClassIfExists(
                     "com.android.systemui.shade.NotificationPanelView", lp.classLoader);
+            XposedBridge.log("LC partial: panel=" + (panel != null));
             if (panel != null) {
                 XposedBridge.hookAllConstructors(panel, new XC_MethodHook() {
                     @Override protected void afterHookedMethod(MethodHookParam p) {
@@ -1726,6 +1727,7 @@ public class MainHook implements IXposedHookLoadPackage {
             };
             for (String name : names) {
                 Class<?> c = XposedHelpers.findClassIfExists(name, lp.classLoader);
+                XposedBridge.log("LC partial: " + name + "=" + (c != null));
                 if (c == null) continue;
                 XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
                     @Override protected void afterHookedMethod(MethodHookParam p) {
@@ -1736,8 +1738,25 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
             }
+            Class<?> controller = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.NotificationPanelViewController", lp.classLoader);
+            if (controller != null) {
+                XposedBridge.hookAllMethods(controller, "setExpandedFraction", new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (p.args.length > 0 && p.args[0] instanceof Float) {
+                            float f = (Float) p.args[0];
+                            lcPartialShade = f > 0.05f && f < 0.85f;
+                            lcApplyNotificationOffset();
+                        }
+                    }
+                });
+                XposedBridge.log("LC partial: expansion controller hooked");
+            } else {
+                XposedBridge.log("LC partial: expansion controller missing");
+            }
             Class<?> motion = XposedHelpers.findClassIfExists(
                     "androidx.constraintlayout.motion.widget.MotionLayout", lp.classLoader);
+            XposedBridge.log("LC partial: motion=" + (motion != null));
             if (motion != null) {
                 XposedBridge.hookAllMethods(motion, "setProgress", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
