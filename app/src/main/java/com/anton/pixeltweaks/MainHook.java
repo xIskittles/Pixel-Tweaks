@@ -1889,6 +1889,16 @@ public class MainHook implements IXposedHookLoadPackage {
                 return false;
             }
             if (lcVt != null && (lcDragArmed || lcDragging)) lcVt.addMovement(e);
+            if (lcDragArmed && !lcDragging && isTouch) {
+                // stock tracking must not run in parallel with ours (it caused the flicker)
+                if (act == android.view.MotionEvent.ACTION_MOVE) {
+                    float dy0 = e.getRawY() - lcDrag0Y;
+                    float dx0 = Math.abs(e.getRawX() - lcDrag0X);
+                    if (!(dy0 < -18f * dens && dx0 < -dy0)) { p.setResult(true); return true; }
+                } else if (act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL) {
+                    lcDragArmed = false; p.setResult(true); return true;
+                }
+            }
             if (act == android.view.MotionEvent.ACTION_MOVE && lcDragArmed && !lcDragging) {
                 float dy = e.getRawY() - lcDrag0Y;
                 float dx = Math.abs(e.getRawX() - lcDrag0X);
