@@ -1886,6 +1886,12 @@ public class MainHook implements IXposedHookLoadPackage {
                         lcQsImmediate = on;
                     }
                 });
+                XposedBridge.hookAllMethods(qsx, "shouldQuickSettingsIntercept", new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        // QS may be opened only by the right-half gesture, not by dragging the half panel
+                        if (!lcQsImmediate) p.setResult(false);
+                    }
+                });
                 XC_MethodHook skipClose = new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
                         // while the right-half QS session is open, let the panel drag collapse it (follows finger)
@@ -1927,11 +1933,14 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (!(Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed")) {
                                 // shade already open: top-right -> full QS, top-left (from full QS) -> half panel
                                 float dens = android.content.res.Resources.getSystem().getDisplayMetrics().density;
-                                if (e.getRawY() > 44f * dens) return;
+                                if (e.getRawY() > 80f * dens) return;
                                 int ww = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
                                 Object q = XposedHelpers.getObjectField(npvc, "mQsController");
                                 boolean qsOpen = (Boolean) XposedHelpers.callMethod(q, "getExpanded");
+                                XposedBridge.log("LC qs: DOWN in open shade x=" + e.getRawX() + " y=" + e.getRawY() + " qsOpen=" + qsOpen);
                                 if (e.getRawX() >= ww / 2f && !qsOpen) {
+                                    lcQsImmediate = true;
+                                    XposedHelpers.callMethod(q, "setExpandImmediate", true);
                                     XposedHelpers.callMethod(npvc, "expandToQs");
                                     XposedBridge.log("LC qs: top-right in half panel -> full QS");
                                     if (p.method.getName().equals("onTouchEvent")) p.setResult(true);
