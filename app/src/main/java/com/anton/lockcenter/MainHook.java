@@ -1700,6 +1700,10 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
+    private static volatile Object lcCtrl = null;
+    private static boolean lcStackHooked;
+    private static long lcLastDateLog = 0;
+
     private static void lcSetPartial(boolean active) {
         if (lcPartialActive == active) return;
         lcPartialActive = active;
@@ -1715,14 +1719,55 @@ public class MainHook implements IXposedHookLoadPackage {
         float shiftPx = 0f;
         synchronized (lcNotifStacks) {
             if (active && !lcNotifStacks.isEmpty()) {
-                View any = lcNotifStacks.get(0);
-                shiftPx = 84f * any.getResources().getDisplayMetrics().density;
+                shiftPx = 68f * lcNotifStacks.get(0).getResources().getDisplayMetrics().density;
             }
             for (View s : lcNotifStacks) {
                 try { s.setTranslationY(shiftPx); } catch (Throwable ignored) {}
             }
         }
         XposedBridge.log("LC shade: partial=" + active);
+    }
+
+    private static void lcEvaluate(View header) {
+        boolean on = false;
+        try {
+            Object c = lcCtrl;
+            if (c != null && header.isShown()) {
+                float qs = XposedHelpers.getFloatField(c, "qsExpandedFraction");
+                float sh = XposedHelpers.getFloatField(c, "shadeExpandedFraction");
+                on = qs < 0.02f && sh > 0.9f;
+            }
+        } catch (Throwable ignored) {}
+        lcSetPartial(on);
+        if (on && header instanceof ViewGroup) {
+            try {
+                int id = header.getResources().getIdentifier("date", "id", "com.android.systemui");
+                View d = id != 0 ? header.findViewById(id) : null;
+                if (d != null) {
+                    if (d.getVisibility() != View.VISIBLE) d.setVisibility(View.VISIBLE);
+                    if (d.getAlpha() < 1f) d.setAlpha(1f);
+                    if (d instanceof TextView && ((TextView) d).getText().length() == 0) {
+                        ((TextView) d).setText(new java.text.SimpleDateFormat("EEE, d MMM",
+                                java.util.Locale.getDefault()).format(new java.util.Date()));
+                    }
+                    if (d.getWidth() == 0 && header.getWidth() > 0) {
+                        int mw = View.MeasureSpec.makeMeasureSpec(header.getWidth() / 2, View.MeasureSpec.AT_MOST);
+                        int mh = View.MeasureSpec.makeMeasureSpec(d.getHeight() > 0 ? d.getHeight() : 84, View.MeasureSpec.EXACTLY);
+                        d.measure(mw, mh);
+                        int l = d.getLeft(), tp = d.getTop();
+                        d.layout(l, tp, l + d.getMeasuredWidth(), tp + d.getMeasuredHeight());
+                    }
+                    long t = System.currentTimeMillis();
+                    if (t - lcLastDateLog > 1500) {
+                        lcLastDateLog = t;
+                        XposedBridge.log("LC shade: date " + d.getClass().getName() + " vis=" + d.getVisibility()
+                                + " a=" + d.getAlpha() + " w=" + d.getWidth() + " h=" + d.getHeight()
+                                + " x=" + d.getX() + " y=" + d.getY() + " hdrH=" + header.getHeight()
+                                + " text=" + (d instanceof TextView ? ((TextView) d).getText() : "-"));
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
     }
 
     private static void initPartialShadeHeader(XC_LoadPackage.LoadPackageParam lp) {
@@ -1732,12 +1777,27 @@ public class MainHook implements IXposedHookLoadPackage {
             if (motion != null) {
                 XposedBridge.hookAllConstructors(motion, new XC_MethodHook() {
                     @Override protected void afterHookedMethod(MethodHookParam p) {
-                        View v = (View) p.thisObject;
-                        if (v.getClass().getName().contains("NoRemeasureMotionLayout")) {
-                            synchronized (lcHeaderMotions) {
-                                if (!lcHeaderMotions.contains(v)) lcHeaderMotions.add(v);
-                            }
-                            XposedBridge.log("LC shade: header motion captured");
+                        final View v = (View) p.thisObject;
+                        if (!v.getClass().getName().contains("NoRemeasureMotionLayout")) return;
+                        synchronized (lcHeaderMotions) {
+                            if (lcHeaderMotions.contains(v)) return;
+                            lcHeaderMotions.add(v);
+                        }
+                        v.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+                            @Override public boolean onPreDraw() { lcEvaluate(v); return true; }
+                        });
+                        v.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                            @Override public void onViewAttachedToWindow(View x) {}
+                            @Override public void onViewDetachedFromWindow(View x) { lcSetPartial(false); }
+                        });
+                        XposedBridge.log("LC shade: header motion captured");
+                    }
+                });
+                XposedBridge.hookAllMethods(motion, "setProgress", new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (lcPartialActive && p.args.length > 0 && p.args[0] instanceof Float
+                                && p.thisObject.getClass().getName().contains("NoRemeasureMotionLayout")) {
+                            p.args[0] = 1f;
                         }
                     }
                 });
@@ -1748,12 +1808,13 @@ public class MainHook implements IXposedHookLoadPackage {
 
         try {
             String[] stackNames = {
-                    "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
-                    "com.android.systemui.statusbar.notification.stack.ui.view.SharedNotificationContainer"
+                    "com.android.systemui.statusbar.notification.stack.ui.view.SharedNotificationContainer",
+                    "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout"
             };
             for (String name : stackNames) {
                 Class<?> c = XposedHelpers.findClassIfExists(name, lp.classLoader);
                 if (c == null) continue;
+                lcStackHooked = true; // shared container wraps the scroller: shift only one of them
                 XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
                     @Override protected void afterHookedMethod(MethodHookParam p) {
                         View v = (View) p.thisObject;
@@ -1762,6 +1823,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         }
                     }
                 });
+                break;
             }
         } catch (Throwable t) {
             XposedBridge.log("LC shade stack ERR " + t);
@@ -1772,27 +1834,12 @@ public class MainHook implements IXposedHookLoadPackage {
                     "com.android.systemui.shade.ShadeHeaderController", lp.classLoader);
             if (hc != null) {
                 XC_MethodHook h = new XC_MethodHook() {
-                    private long lastLog = 0;
-                    @Override protected void afterHookedMethod(MethodHookParam p) {
-                        try {
-                            float qs = XposedHelpers.getFloatField(p.thisObject, "qsExpandedFraction");
-                            float sh = XposedHelpers.getFloatField(p.thisObject, "shadeExpandedFraction");
-                            long now = System.currentTimeMillis();
-                            if (now - lastLog > 250) {
-                                lastLog = now;
-                                XposedBridge.log("LC shade: qs=" + qs + " shade=" + sh);
-                            }
-                            lcSetPartial(qs < 0.02f && sh > 0.02f);
-                        } catch (Throwable t) {
-                            XposedBridge.log("LC shade read ERR " + t);
-                        }
-                    }
+                    @Override protected void afterHookedMethod(MethodHookParam p) { lcCtrl = p.thisObject; }
                 };
                 XposedBridge.hookAllMethods(hc, "updateTransition$1", h);
                 XposedBridge.hookAllMethods(hc, "updatePosition", h);
+                XposedBridge.hookAllMethods(hc, "onViewAttached", h);
                 XposedBridge.log("LC shade: header controller hooked");
-            } else {
-                XposedBridge.log("LC shade: header controller missing");
             }
         } catch (Throwable t) {
             XposedBridge.log("LC shade expansion ERR " + t);
@@ -1806,8 +1853,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         try {
             // Experimental: opt-in only (touch /data/adb/lockcenter_shade_on), default = stock shade.
-            if (new java.io.File("/data/adb/lockcenter_shade_on").exists()
-                    && !new java.io.File("/data/adb/lockcenter_off").exists()) {
+            {
                 initPartialShadeHeader(lpparam);
             }
         } catch (Throwable t) {
