@@ -1701,6 +1701,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static volatile Object lcCtrl = null;
+    private static volatile Object lcNpvc = null;
     private static boolean lcStackHooked;
     private static long lcLastDateLog = 0;
 
@@ -1747,7 +1748,12 @@ public class MainHook implements IXposedHookLoadPackage {
         boolean on = false;
         try {
             Object c = lcCtrl;
-            if (c != null && header.isShown()) {
+            boolean collapsed = false;
+            try {
+                Object n = lcNpvc;
+                if (n != null) collapsed = (Boolean) XposedHelpers.callMethod(n, "isFullyCollapsed");
+            } catch (Throwable ignored) {}
+            if (c != null && header.isShown() && !collapsed) {
                 float qs = XposedHelpers.getFloatField(c, "qsExpandedFraction");
                 float sh = XposedHelpers.getFloatField(c, "shadeExpandedFraction");
                 on = sh > 0.02f;
@@ -1846,6 +1852,16 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log("LC shade stack ERR " + t);
         }
+
+        try {
+            Class<?> npc = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.NotificationPanelViewController", lp.classLoader);
+            if (npc != null) {
+                XposedBridge.hookAllConstructors(npc, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) { lcNpvc = p.thisObject; }
+                });
+            }
+        } catch (Throwable t) { XposedBridge.log("LC npvc ERR " + t); }
 
         try {
             Class<?> th = XposedHelpers.findClassIfExists(
