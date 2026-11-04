@@ -1466,12 +1466,42 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static void initShadeHeaderForce(XC_LoadPackage.LoadPackageParam lp) {
+        try {
+            Class<?> clockCls = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.statusbar.policy.Clock", lp.classLoader);
+            XposedBridge.log("LC clock: class=" + (clockCls != null));
+            if (clockCls != null) {
+                XposedBridge.hookAllConstructors(clockCls, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam param) {
+                        final android.view.View v = (android.view.View) param.thisObject;
+                        v.post(new Runnable() {
+                            @Override public void run() {
+                                try {
+                                    android.content.Context ctx = v.getContext();
+                                    int id = ctx.getResources().getIdentifier("clock", "id", ctx.getPackageName());
+                                    if (id != 0 && v.getId() != id) return;
+                                    ((android.widget.TextView) v).setTextSize(
+                                            android.util.TypedValue.COMPLEX_UNIT_DIP, 44f);
+                                    XposedBridge.log("LC clock: enlarged " + v.getClass().getSimpleName() + " id=" + v.getId());
+                                } catch (Throwable t) {
+                                    XposedBridge.log("LC clock ERR " + t);
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("LC clock init ERR " + t);
+        }
         Class<?> c = XposedHelpers.findClassIfExists(
                 "com.android.systemui.shade.ShadeHeaderController", lp.classLoader);
         XposedBridge.log("LC header: class=" + (c != null));
         if (c == null) return;
         int hooked = 0;
+        int logged = 0;
         for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+            if (logged < 40) { logged++; XposedBridge.log("LC headerm: " + m.getName() + java.util.Arrays.toString(m.getParameterTypes())); }
             String n = m.getName();
             if (!n.toLowerCase().contains("expansion")) continue;
             final Class<?>[] types = m.getParameterTypes();
