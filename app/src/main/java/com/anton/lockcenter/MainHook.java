@@ -1467,32 +1467,25 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private static void initShadeHeaderForce(XC_LoadPackage.LoadPackageParam lp) {
         try {
-            Class<?> clockCls = XposedHelpers.findClassIfExists(
-                    "com.android.systemui.statusbar.policy.Clock", lp.classLoader);
-            XposedBridge.log("LC clock: class=" + (clockCls != null));
-            if (clockCls != null) {
-                XposedBridge.hookAllConstructors(clockCls, new XC_MethodHook() {
-                    @Override protected void afterHookedMethod(MethodHookParam param) {
-                        final android.view.View v = (android.view.View) param.thisObject;
-                        v.post(new Runnable() {
-                            @Override public void run() {
-                                try {
-                                    android.content.Context ctx = v.getContext();
-                                    int id = ctx.getResources().getIdentifier("clock", "id", ctx.getPackageName());
-                                    if (id != 0 && v.getId() != id) return;
-                                    ((android.widget.TextView) v).setTextSize(
-                                            android.util.TypedValue.COMPLEX_UNIT_DIP, 44f);
-                                    XposedBridge.log("LC clock: enlarged " + v.getClass().getSimpleName() + " id=" + v.getId());
-                                } catch (Throwable t) {
-                                    XposedBridge.log("LC clock ERR " + t);
-                                }
+            Class<?> base = XposedHelpers.findClassIfExists(
+                    "androidx.constraintlayout.motion.widget.MotionLayout", lp.classLoader);
+            XposedBridge.log("LC ml: base=" + (base != null));
+            if (base != null) {
+                XposedBridge.hookAllMethods(base, "setProgress", new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            String cn = param.thisObject.getClass().getName();
+                            if (!cn.contains("NoRemeasureMotionLayout")) return;
+                            if (param.args.length >= 1 && param.args[0] instanceof Float) {
+                                param.args[0] = 1f;
                             }
-                        });
+                        } catch (Throwable ignored) {}
                     }
                 });
+                XposedBridge.log("LC ml: progress forced (base)");
             }
         } catch (Throwable t) {
-            XposedBridge.log("LC clock init ERR " + t);
+            XposedBridge.log("LC ml ERR " + t);
         }
         Class<?> c = XposedHelpers.findClassIfExists(
                 "com.android.systemui.shade.ShadeHeaderController", lp.classLoader);
