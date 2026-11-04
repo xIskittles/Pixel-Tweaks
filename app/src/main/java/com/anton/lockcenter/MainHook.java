@@ -1679,10 +1679,140 @@ public class MainHook implements IXposedHookLoadPackage {
         return null;
     }
 
+    // ======== Partial-shade expanded header (strictly gated, no scrim/panel translation) ========
+    private static volatile boolean lcPartialActive = false;
+    private static final java.util.List<View> lcHeaderMotions =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<View>());
+    private static final java.util.List<View> lcNotifStacks =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<View>());
+
+    private static void lcSetClip(View v, boolean clip, int levels) {
+        View cur = v;
+        for (int i = 0; i < levels && cur != null; i++) {
+            ViewParent vp = cur.getParent();
+            if (!(vp instanceof ViewGroup)) break;
+            ViewGroup g = (ViewGroup) vp;
+            try {
+                g.setClipChildren(clip);
+                g.setClipToPadding(clip);
+            } catch (Throwable ignored) {}
+            cur = g;
+        }
+    }
+
+    private static void lcSetPartial(boolean active) {
+        if (lcPartialActive == active) return;
+        lcPartialActive = active;
+        synchronized (lcHeaderMotions) {
+            for (View h : lcHeaderMotions) {
+                try {
+                    java.lang.reflect.Method m = h.getClass().getMethod("setProgress", float.class);
+                    m.invoke(h, active ? 1f : 0f);
+                } catch (Throwable ignored) {}
+                lcSetClip(h, !active, 2);
+            }
+        }
+        float shiftPx = 0f;
+        synchronized (lcNotifStacks) {
+            if (active && !lcNotifStacks.isEmpty()) {
+                View any = lcNotifStacks.get(0);
+                shiftPx = 84f * any.getResources().getDisplayMetrics().density;
+            }
+            for (View s : lcNotifStacks) {
+                try { s.setTranslationY(shiftPx); } catch (Throwable ignored) {}
+            }
+        }
+        XposedBridge.log("LC shade: partial=" + active);
+    }
+
+    private static void initPartialShadeHeader(XC_LoadPackage.LoadPackageParam lp) {
+        try {
+            Class<?> motion = XposedHelpers.findClassIfExists(
+                    "androidx.constraintlayout.motion.widget.MotionLayout", lp.classLoader);
+            if (motion != null) {
+                XposedBridge.hookAllConstructors(motion, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        View v = (View) p.thisObject;
+                        if (v.getClass().getName().contains("NoRemeasureMotionLayout")) {
+                            synchronized (lcHeaderMotions) {
+                                if (!lcHeaderMotions.contains(v)) lcHeaderMotions.add(v);
+                            }
+                            XposedBridge.log("LC shade: header motion captured");
+                        }
+                    }
+                });
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("LC shade header ERR " + t);
+        }
+
+        try {
+            String[] stackNames = {
+                    "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
+                    "com.android.systemui.statusbar.notification.stack.ui.view.SharedNotificationContainer"
+            };
+            for (String name : stackNames) {
+                Class<?> c = XposedHelpers.findClassIfExists(name, lp.classLoader);
+                if (c == null) continue;
+                XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        View v = (View) p.thisObject;
+                        synchronized (lcNotifStacks) {
+                            if (!lcNotifStacks.contains(v)) lcNotifStacks.add(v);
+                        }
+                    }
+                });
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("LC shade stack ERR " + t);
+        }
+
+        try {
+            Class<?> hc = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.ShadeHeaderController", lp.classLoader);
+            if (hc != null) {
+                XC_MethodHook h = new XC_MethodHook() {
+                    private long lastLog = 0;
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            float qs = XposedHelpers.getFloatField(p.thisObject, "qsExpandedFraction");
+                            float sh = XposedHelpers.getFloatField(p.thisObject, "shadeExpandedFraction");
+                            long now = System.currentTimeMillis();
+                            if (now - lastLog > 250) {
+                                lastLog = now;
+                                XposedBridge.log("LC shade: qs=" + qs + " shade=" + sh);
+                            }
+                            lcSetPartial(qs < 0.02f && sh > 0.02f);
+                        } catch (Throwable t) {
+                            XposedBridge.log("LC shade read ERR " + t);
+                        }
+                    }
+                };
+                XposedBridge.hookAllMethods(hc, "updateTransition$1", h);
+                XposedBridge.hookAllMethods(hc, "updatePosition", h);
+                XposedBridge.log("LC shade: header controller hooked");
+            } else {
+                XposedBridge.log("LC shade: header controller missing");
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("LC shade expansion ERR " + t);
+        }
+    }
+
     private static void initSystemUI(XC_LoadPackage.LoadPackageParam lpparam) {
         ClassLoader cl = lpparam.classLoader;
 
         loadConfig(null);
+
+        try {
+            // Experimental: opt-in only (touch /data/adb/lockcenter_shade_on), default = stock shade.
+            if (new java.io.File("/data/adb/lockcenter_shade_on").exists()
+                    && !new java.io.File("/data/adb/lockcenter_off").exists()) {
+                initPartialShadeHeader(lpparam);
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("LC shade init ERR " + t);
+        }
 
         try {
             initQsRowsZero(lpparam);
