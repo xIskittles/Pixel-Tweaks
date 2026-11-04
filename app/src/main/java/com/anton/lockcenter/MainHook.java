@@ -1701,6 +1701,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static volatile Object lcCtrl = null;
+    private static volatile boolean lcBypass = false;
     private static volatile boolean lcQsImmediate = false;
     private static volatile Object lcNpvc = null;
     private static boolean lcStackHooked;
@@ -1886,6 +1887,12 @@ public class MainHook implements IXposedHookLoadPackage {
                         lcQsImmediate = on;
                     }
                 });
+                XposedBridge.hookAllMethods(qsx, "isExpansionEnabled", new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        // QS expansion allowed only inside our native session or for our own calls
+                        if (!lcQsImmediate && !lcBypass) p.setResult(false);
+                    }
+                });
                 XposedBridge.hookAllMethods(qsx, "shouldQuickSettingsIntercept", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
                         // QS may be opened only by the right-half gesture, not by dragging the half panel
@@ -1941,7 +1948,8 @@ public class MainHook implements IXposedHookLoadPackage {
                                 if (e.getRawX() >= ww / 2f && !qsOpen) {
                                     lcQsImmediate = true;
                                     XposedHelpers.callMethod(q, "setExpandImmediate", true);
-                                    XposedHelpers.callMethod(npvc, "expandToQs");
+                                    lcBypass = true;
+                                    try { XposedHelpers.callMethod(npvc, "expandToQs"); } finally { lcBypass = false; }
                                     XposedBridge.log("LC qs: top-right in half panel -> full QS");
                                     if (p.method.getName().equals("onTouchEvent")) p.setResult(true);
                                 } else if (e.getRawX() < ww / 2f && qsOpen) {
@@ -1956,7 +1964,11 @@ public class MainHook implements IXposedHookLoadPackage {
                             int w = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
                             if (e.getRawX() < w / 2f) return;
                             Object qs = XposedHelpers.getObjectField(npvc, "mQsController");
-                            if (!(Boolean) XposedHelpers.callMethod(qs, "isExpansionEnabled")) return;
+                            lcBypass = true;
+                            boolean en;
+                            try { en = (Boolean) XposedHelpers.callMethod(qs, "isExpansionEnabled"); }
+                            finally { lcBypass = false; }
+                            if (!en) return;
                             lcQsImmediate = true;
                             XposedHelpers.callMethod(qs, "setExpandImmediate", true);
                             try {
