@@ -1701,6 +1701,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static volatile Object lcCtrl = null;
+    private static volatile boolean lcQsImmediate = false;
     private static volatile Object lcNpvc = null;
     private static boolean lcStackHooked;
     private static long lcLastDateLog = 0;
@@ -1715,6 +1716,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 px = 56f * lcNotifStacks.get(0).getResources().getDisplayMetrics().density * k;
             for (View v : lcNotifStacks) {
                 if (v.getTranslationY() != px) v.setTranslationY(px);
+                float al = lcQsImmediate ? 0f : 1f; // hide notifications while QS is pulled natively
+                if (v.getAlpha() != al && (lcQsImmediate || v.getAlpha() == 0f)) v.setAlpha(al);
             }
         }
         synchronized (lcScrimViews) {
@@ -1852,6 +1855,27 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log("LC shade stack ERR " + t);
         }
+
+        try {
+            Class<?> qsx = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.QuickSettingsControllerImpl", lp.classLoader);
+            if (qsx != null) {
+                XposedBridge.hookAllMethods(qsx, "setExpandImmediate", new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        StringBuilder sb = new StringBuilder();
+                        StackTraceElement[] st = new Throwable().getStackTrace();
+                        for (int i = 2; i < Math.min(st.length, 8); i++) sb.append(st[i].getMethodName()).append('<');
+                        lcQsImmediate = Boolean.TRUE.equals(p.args[0]);
+                    }
+                });
+                XposedBridge.hookAllMethods(qsx, "setExpansionHeight", new XC_MethodHook() {
+                    private long last;
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        last = 0;
+                    }
+                });
+            }
+        } catch (Throwable t) { XposedBridge.log("LC qs dbg ERR " + t); }
 
         try {
             Class<?> npc = XposedHelpers.findClassIfExists(
