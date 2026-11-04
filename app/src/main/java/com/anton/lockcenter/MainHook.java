@@ -1924,7 +1924,26 @@ public class MainHook implements IXposedHookLoadPackage {
                             for (Object a : p.args) if (a instanceof android.view.MotionEvent) e = (android.view.MotionEvent) a;
                             if (e == null || e.getActionMasked() != android.view.MotionEvent.ACTION_DOWN) return;
                             Object npvc = XposedHelpers.getObjectField(p.thisObject, "this$0");
-                            if (!(Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed")) return;
+                            if (!(Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed")) {
+                                // shade already open: top-right -> full QS, top-left (from full QS) -> half panel
+                                float dens = android.content.res.Resources.getSystem().getDisplayMetrics().density;
+                                if (e.getRawY() > 44f * dens) return;
+                                int ww = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
+                                Object q = XposedHelpers.getObjectField(npvc, "mQsController");
+                                boolean qsOpen = (Boolean) XposedHelpers.callMethod(q, "getExpanded");
+                                if (e.getRawX() >= ww / 2f && !qsOpen) {
+                                    XposedHelpers.callMethod(npvc, "expandToQs");
+                                    XposedBridge.log("LC qs: top-right in half panel -> full QS");
+                                    if (p.method.getName().equals("onTouchEvent")) p.setResult(true);
+                                } else if (e.getRawX() < ww / 2f && qsOpen) {
+                                    lcQsImmediate = false;
+                                    XposedHelpers.callMethod(q, "setExpandImmediate", false);
+                                    XposedHelpers.callMethod(q, "closeQs");
+                                    XposedBridge.log("LC qs: top-left in full QS -> half panel");
+                                    if (p.method.getName().equals("onTouchEvent")) p.setResult(true);
+                                }
+                                return;
+                            }
                             int w = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
                             if (e.getRawX() < w / 2f) return;
                             Object qs = XposedHelpers.getObjectField(npvc, "mQsController");
