@@ -1848,26 +1848,48 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         try {
+            Class<?> th = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.NotificationPanelViewController$TouchHandler", lp.classLoader);
+            if (th != null) {
+                XC_MethodHook down = new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        try {
+                            android.view.MotionEvent e = null;
+                            for (Object a : p.args) if (a instanceof android.view.MotionEvent) e = (android.view.MotionEvent) a;
+                            if (e == null || e.getActionMasked() != android.view.MotionEvent.ACTION_DOWN) return;
+                            Object npvc = XposedHelpers.getObjectField(p.thisObject, "this$0");
+                            if (!(Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed")) return;
+                            int w = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
+                            if (e.getRawX() < w / 2f) return;
+                            Object qs = XposedHelpers.getObjectField(npvc, "mQsController");
+                            if (!(Boolean) XposedHelpers.callMethod(qs, "isExpansionEnabled")) return;
+                            XposedHelpers.callMethod(qs, "setExpandImmediate", true);
+                            try {
+                                Object nssl = XposedHelpers.getObjectField(
+                                        XposedHelpers.getObjectField(qs, "mNotificationStackScrollLayoutController"), "mView");
+                                XposedHelpers.setBooleanField(nssl, "mShouldShowShelfOnly", true);
+                                XposedHelpers.callMethod(nssl, "updateAlgorithmLayoutMinHeight");
+                            } catch (Throwable ignored) {}
+                            try {
+                                Object q = XposedHelpers.getObjectField(qs, "mQs");
+                                if (q != null) XposedHelpers.callMethod(q, "setListening", true);
+                            } catch (Throwable ignored) {}
+                            XposedBridge.log("LC qs: DOWN right half -> expandImmediate");
+                        } catch (Throwable t) {
+                            XposedBridge.log("LC qs down ERR " + t);
+                        }
+                    }
+                };
+                XposedBridge.hookAllMethods(th, "onInterceptTouchEvent", down);
+                XposedBridge.hookAllMethods(th, "onTouchEvent", down);
+                XposedBridge.log("LC qs: touch handler hooked");
+            }
+        } catch (Throwable t) { XposedBridge.log("LC qs touch ERR " + t); }
+
+        try {
             Class<?> qsc = XposedHelpers.findClassIfExists(
                     "com.android.systemui.shade.QuickSettingsControllerImpl", lp.classLoader);
             if (qsc != null) {
-                XposedBridge.hookAllMethods(qsc, "isOpenQsEvent", new XC_MethodHook() {
-                    @Override protected void afterHookedMethod(MethodHookParam p) {
-                        try {
-                            if (Boolean.TRUE.equals(p.getResult())) return;
-                            android.view.MotionEvent e = (android.view.MotionEvent) p.args[0];
-                            if (e.getActionMasked() != android.view.MotionEvent.ACTION_DOWN) return;
-                            Object c = lcCtrl;
-                            float sh = c == null ? 0f : XposedHelpers.getFloatField(c, "shadeExpandedFraction");
-                            if (sh > 0.05f) return;
-                            int w = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
-                            if (e.getRawX() >= w / 2f) {
-                                p.setResult(true);
-                                XposedBridge.log("LC qs: right-half down -> native QS expand x=" + e.getRawX());
-                            }
-                        } catch (Throwable ignored) {}
-                    }
-                });
                 XposedBridge.log("LC qs: isOpenQsEvent hooked");
             }
         } catch (Throwable t) { XposedBridge.log("LC qs hook ERR " + t); }
