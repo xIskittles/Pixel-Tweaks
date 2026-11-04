@@ -16,6 +16,8 @@ import java.io.File;
 import java.io.FileReader;
 import java.lang.reflect.Field;
 import java.util.Collections;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.WeakHashMap;
 
@@ -1677,6 +1679,82 @@ public class MainHook implements IXposedHookLoadPackage {
         return null;
     }
 
+    // Partial-shade-only customization. It never changes status-bar or full-QS geometry.
+    private static volatile boolean lcPartialShade;
+    private static final List<View> lcNotificationViews =
+            Collections.synchronizedList(new ArrayList<View>());
+
+    private static void lcApplyNotificationOffset() {
+        float offset = 0f;
+        if (lcPartialShade && !lcNotificationViews.isEmpty()) {
+            View v = lcNotificationViews.get(0);
+            offset = 84f * v.getResources().getDisplayMetrics().density;
+        }
+        synchronized (lcNotificationViews) {
+            for (View v : lcNotificationViews) {
+                try { v.setTranslationY(offset); } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    private static void initPartialShadeHeader(XC_LoadPackage.LoadPackageParam lp) {
+        try {
+            final Class<?> panel = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.NotificationPanelView", lp.classLoader);
+            if (panel != null) {
+                XposedBridge.hookAllConstructors(panel, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        final View v = (View) p.thisObject;
+                        v.getViewTreeObserver().addOnPreDrawListener(
+                                new ViewTreeObserver.OnPreDrawListener() {
+                                    @Override public boolean onPreDraw() {
+                                        int h = v.getHeight();
+                                        int sh = v.getResources().getDisplayMetrics().heightPixels;
+                                        float f = sh > 0 ? h / (float) sh : 0f;
+                                        // Only the middle, partially expanded range is modified.
+                                        lcPartialShade = f >= .30f && f <= .85f;
+                                        lcApplyNotificationOffset();
+                                        return true;
+                                    }
+                                });
+                    }
+                });
+            }
+            String[] names = {
+                    "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
+                    "com.android.systemui.statusbar.notification.stack.ui.view.SharedNotificationContainer"
+            };
+            for (String name : names) {
+                Class<?> c = XposedHelpers.findClassIfExists(name, lp.classLoader);
+                if (c == null) continue;
+                XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        View v = (View) p.thisObject;
+                        synchronized (lcNotificationViews) {
+                            if (!lcNotificationViews.contains(v)) lcNotificationViews.add(v);
+                        }
+                    }
+                });
+            }
+            Class<?> motion = XposedHelpers.findClassIfExists(
+                    "androidx.constraintlayout.motion.widget.MotionLayout", lp.classLoader);
+            if (motion != null) {
+                XposedBridge.hookAllMethods(motion, "setProgress", new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (!lcPartialShade) return;
+                        if (p.thisObject.getClass().getName().contains("NoRemeasureMotionLayout")
+                                && p.args.length > 0 && p.args[0] instanceof Float) {
+                            p.args[0] = 1f;
+                        }
+                    }
+                });
+            }
+            XposedBridge.log("LC partial shade: enabled; full QS and lockscreen untouched");
+        } catch (Throwable t) {
+            XposedBridge.log("LC partial shade ERR " + t);
+        }
+    }
+
     private static void initSystemUI(XC_LoadPackage.LoadPackageParam lpparam) {
         ClassLoader cl = lpparam.classLoader;
 
@@ -1684,7 +1762,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         try {
             if (!new java.io.File("/data/adb/lockcenter_off").exists()) {
-                // Shade header experiments intentionally disabled: keep SystemUI stock.
+                initPartialShadeHeader(lpparam);
             }
         } catch (Throwable t) {
             XposedBridge.log("LC header ERR " + t);
@@ -1721,11 +1799,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
         try {
             hookTileBehavior(cl);
-        } catch (Throwable t) {
-            XposedBridge.log(t);
-        }
-
-        try {
         } catch (Throwable t) {
             XposedBridge.log(t);
         }

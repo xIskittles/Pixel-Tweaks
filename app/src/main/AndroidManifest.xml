@@ -3,9 +3,9 @@
 
     <application
         android:allowBackup="false"
-        android:label="LockCenter"
+        android:label="Pixel-Tweaks"
         android:icon="@android:drawable/ic_menu_agenda"
-        android:theme="@style/Theme.LockCenter"
+        android:theme="@style/Theme.PixelTweaks"
         android:hasCode="true">
 
         <meta-data
