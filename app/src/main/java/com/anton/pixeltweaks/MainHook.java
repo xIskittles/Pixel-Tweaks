@@ -45,6 +45,8 @@ public class MainHook implements IXposedHookLoadPackage {
     private static volatile boolean lcDateBypass = false;
     private static long lcLastKgLog = 0;
     private static long lcKgDbg = 0;
+    private static long lcKgErr = 0;
+    private static final boolean lcKgDisable = false;
     private static long lcKgDbg2 = 0;
 
     private static final int UNSET = -1;
@@ -2519,7 +2521,13 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static void initSystemUI(XC_LoadPackage.LoadPackageParam lpparam) {
-        XposedBridge.log("PT build 235614");
+        XposedBridge.log("PT build 001002");
+        
+        
+        
+        
+        
+        
         
         
         
@@ -2582,7 +2590,7 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         try {
-            if (!glanceAboveClock) {
+            if (true) {
                 hookDateTranslation(cl);
                 hookDateTranslationY(cl);
             }
@@ -2777,11 +2785,12 @@ public class MainHook implements IXposedHookLoadPackage {
                                             loadConfig(root.getContext());
                                         }
 
-                                        long t0 = System.currentTimeMillis();
-                                        fixKeyguard(root, false);
-                                        if (t0 - lcKgDbg > 3000) XposedBridge.log("PT kg: preDraw children=" + root.getChildCount());
-                                        forceCenterDateAndClock(root);
-                                        lcGlanceAboveClock(root);
+                                        try { if (!lcKgDisable) fixKeyguard(root, false); }
+                                        catch (Throwable t1) { if (System.currentTimeMillis() - lcKgErr > 4000) { lcKgErr = System.currentTimeMillis(); XposedBridge.log("PT kg: fixKeyguard ERR " + t1); } }
+                                        try { if (!lcKgDisable) forceCenterDateAndClock(root); }
+                                        catch (Throwable t2) { if (System.currentTimeMillis() - lcKgErr > 4000) { lcKgErr = System.currentTimeMillis(); XposedBridge.log("PT kg: center ERR " + t2); } }
+                                        try { if (!lcKgDisable) lcGlanceAboveClock(root); }
+                                        catch (Throwable t3) { if (System.currentTimeMillis() - lcKgErr > 4000) { lcKgErr = System.currentTimeMillis(); XposedBridge.log("PT kg: glance ERR " + t3); } }
                                     } catch (Throwable ignored) {}
                                     return true;
                                 }
@@ -2827,18 +2836,30 @@ public class MainHook implements IXposedHookLoadPackage {
                         + " glance=" + (glance == null ? "-" : glance.getClass().getSimpleName()
                             + " top=" + glance.getTop() + " h=" + glance.getHeight()
                             + " ty=" + glance.getTranslationY()
-                            + " vis=" + glance.getVisibility()));
+                            + " vis=" + glance.getVisibility() + " flag=" + glanceAboveClock));
             }
             float off = keyguardTopOffsetPx;
             if (clockView != null) {
-                if (glance != null && glanceAboveClock) {
+                if (glance != null) {
                     float dens = root.getResources().getDisplayMetrics().density;
                     int sb = root.getPaddingTop() > 0 ? root.getPaddingTop() : Math.round(30f * dens);
                     float glanceH = glance.getHeight() > 0 ? glance.getHeight() : Math.round(56f * dens);
                     float glanceTop = sb + 6f * dens + off;
-                    lcDateBypass = true;
-                    try { glance.setTranslationY(glanceTop - glance.getTop()); }
-                    finally { lcDateBypass = false; }
+                    // set the private field directly: our own setTranslationY hooks would overwrite it
+                    try {
+                        XposedHelpers.setFloatField(glance, "mTranslationY", glanceTop - glance.getTop());
+                        glance.invalidate();
+                        if (System.currentTimeMillis() - lcKgDbg > 2500) {
+                            lcKgDbg = System.currentTimeMillis();
+                            XposedBridge.log("PT kg3: set want=" + (glanceTop - glance.getTop())
+                                    + " now ty=" + glance.getTranslationY() + " parent="
+                                    + (glance.getParent() == null ? "-" : glance.getParent().getClass().getSimpleName()));
+                        }
+                    } catch (Throwable t) {
+                        lcDateBypass = true;
+                        try { glance.setTranslationY(glanceTop - glance.getTop()); }
+                        finally { lcDateBypass = false; }
+                    }
                     if (nowG - lcLastKgLog > 3000) {
                         lcLastKgLog = nowG;
                         XposedBridge.log("PT kg2: glanceTop=" + glanceTop + " gTop=" + glance.getTop()
