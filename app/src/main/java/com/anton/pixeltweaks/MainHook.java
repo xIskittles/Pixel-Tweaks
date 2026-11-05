@@ -40,6 +40,8 @@ public class MainHook implements IXposedHookLoadPackage {
     public static volatile float largeClockScaleY = 1.05f;
     public static volatile int cardTopMarginPx = -50;
     public static volatile int notifTopMarginPx = 0;
+    public static volatile int keyguardTopOffsetPx = 0;
+    public static volatile boolean glanceAboveClock = true;
 
     private static final int UNSET = -1;
     private static final int PARENT = 0;
@@ -103,6 +105,8 @@ public class MainHook implements IXposedHookLoadPackage {
             else if ("large_clock_scale_y".equals(k)) largeClockScaleY = Float.parseFloat(v);
             else if ("card_top_margin_px".equals(k)) cardTopMarginPx = Integer.parseInt(v);
             else if ("notif_top_margin_px".equals(k)) notifTopMarginPx = Integer.parseInt(v);
+            else if ("keyguard_top_offset_px".equals(k)) keyguardTopOffsetPx = Integer.parseInt(v);
+            else if ("glance_above_clock".equals(k)) glanceAboveClock = "1".equals(v) || "true".equals(v);
         } catch (Throwable ignored) {}
     }
 
@@ -2753,6 +2757,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
                                         fixKeyguard(root, false);
                                         forceCenterDateAndClock(root);
+                                        lcGlanceAboveClock(root);
                                     } catch (Throwable ignored) {}
                                     return true;
                                 }
@@ -2760,6 +2765,35 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             });
         }
+    }
+
+    /** Puts the date/weather/alarm row above the clock and applies the user's top offset. */
+    private static void lcGlanceAboveClock(ViewGroup root) {
+        try {
+            View clock = null, large = null, glance = null;
+            for (int i = 0; i < root.getChildCount(); i++) {
+                View v = root.getChildAt(i);
+                if (v.getVisibility() != View.VISIBLE) continue;
+                String n = v.getClass().getName();
+                if (n.endsWith(CLOCK_SUFFIX)) clock = v;
+                else if (n.endsWith(LARGE_CLOCK_SUFFIX)) large = v;
+                else if (isDateOnly(v) || isSmartspaceCard(v)) glance = v;
+            }
+            View clockView = (large != null && large.getVisibility() == View.VISIBLE) ? large : clock;
+            if (clockView == null) return;
+            float off = keyguardTopOffsetPx;
+            if (clockView != null) {
+                if (glance != null && glanceAboveClock && glance.getHeight() > 0) {
+                    float dens = root.getResources().getDisplayMetrics().density;
+                    glance.setTranslationY(off);
+                    // clock sits under the date/weather/alarm row
+                    float targetTop = glance.getBottom() + glance.getTranslationY() + 6f * dens;
+                    clockView.setTranslationY(targetTop - clockView.getTop());
+                } else {
+                    clockView.setTranslationY(off);
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static void fixKeyguard(ViewGroup root, boolean inMeasure) {

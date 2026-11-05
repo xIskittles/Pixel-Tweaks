@@ -35,6 +35,7 @@ public class MainActivity extends AppCompatActivity {
     private float largeClockScaleY;
     private int cardTopMarginPx;
     private int notifTopMarginPx;
+    private int keyguardTopOffsetPx;
     private float qsbScale = 1.05f;
 
     // Док-панель (Pixel Launcher)
@@ -56,6 +57,7 @@ public class MainActivity extends AppCompatActivity {
         largeClockScaleY = prefs.getFloat("large_clock_scale_y", 1.05f);
         cardTopMarginPx = prefs.getInt("card_top_margin_px", -50);
         notifTopMarginPx = prefs.getInt("notif_top_margin_px", 0);
+        keyguardTopOffsetPx = prefs.getInt("keyguard_top_offset_px", 0);
         qsbScale = prefs.getFloat("qsb_scale", 1.05f);
 
         // Док
@@ -73,6 +75,7 @@ public class MainActivity extends AppCompatActivity {
         addFloatRow(list, "Высота больших часов", 0.5f, 3.0f, largeClockScaleY, 0.05f, v -> largeClockScaleY = v);
         addIntRow(list, "Отступ плашки фонарика от даты (px)", -80, 80, cardTopMarginPx, v -> cardTopMarginPx = v);
         addIntRow(list, "Отступ уведомлений от даты (px)", -100, 100, notifTopMarginPx, v -> notifTopMarginPx = v);
+        addIntRow(list, "Смещение часов и даты от верха (px)", -400, 400, keyguardTopOffsetPx, v -> keyguardTopOffsetPx = v);
 
         // Блок док-панели рабочего стола
         addHeader(list, "🍏 Док-панель (Pixel Launcher)");
@@ -156,6 +159,8 @@ public class MainActivity extends AppCompatActivity {
                 + ",large_clock_scale_y=" + largeClockScaleY
                 + ",card_top_margin_px=" + cardTopMarginPx
                 + ",notif_top_margin_px=" + notifTopMarginPx
+                + ",keyguard_top_offset_px=" + keyguardTopOffsetPx
+                + ",glance_above_clock=1"
                 + ",qsb_scale=" + qsbScale
 ;
     }
@@ -182,6 +187,7 @@ public class MainActivity extends AppCompatActivity {
                 .putFloat("large_clock_scale_y", largeClockScaleY)
                 .putInt("card_top_margin_px", cardTopMarginPx)
                 .putInt("notif_top_margin_px", notifTopMarginPx)
+                .putInt("keyguard_top_offset_px", keyguardTopOffsetPx)
                 .putFloat("qsb_scale", qsbScale)
                 .apply();
 
@@ -200,6 +206,8 @@ public class MainActivity extends AppCompatActivity {
                 + "large_clock_scale_y=" + largeClockScaleY + "\n"
                 + "card_top_margin_px=" + cardTopMarginPx + "\n"
                 + "notif_top_margin_px=" + notifTopMarginPx + "\n"
+                + "keyguard_top_offset_px=" + keyguardTopOffsetPx + "\n"
+                + "glance_above_clock=1\n"
                 + "qsb_scale=" + qsbScale + "\n"
 ;
 
