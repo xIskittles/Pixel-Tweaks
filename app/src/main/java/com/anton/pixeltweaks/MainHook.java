@@ -1761,6 +1761,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static volatile long lcSessionStart = 0;
     private static volatile long lcFlingGuard = 0;
     private static volatile boolean lcPending, lcFired, lcDownQsOpen;
+    private static volatile long lcDbgMove = 0;
     private static volatile float lcDownX, lcDownY;
     private static volatile long lcBlockClicksUntil = 0;
     private static volatile boolean lcBypass = false;
@@ -1779,7 +1780,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 px = 56f * lcNotifStacks.get(0).getResources().getDisplayMetrics().density * k;
             for (View v : lcNotifStacks) {
                 if (v.getTranslationY() != px) v.setTranslationY(px);
-                float al = lcQsImmediate ? 0f : 1f; // hide notifications while QS is pulled natively
+                float al = (lcQsImmediate || lcDragging) ? 0f : 1f; // hide for the whole QS session
                 if (v.getAlpha() != al && (lcQsImmediate || v.getAlpha() == 0f)) v.setAlpha(al);
             }
         }
@@ -1792,14 +1793,22 @@ public class MainHook implements IXposedHookLoadPackage {
                 float t = plate ? px : 0f;
                 if (plate && v.getTranslationY() != t) v.setTranslationY(t);
                 if (plate) {
-                    float al = lcQsImmediate ? 0f : 1f;
-                    if (v.getAlpha() != al && (lcQsImmediate || v.getAlpha() == 0f)) v.setAlpha(al);
+                    float al = (lcQsImmediate || lcDragging) ? 0f : 1f;
+                    if (v.getAlpha() != al) v.setAlpha(al);
                 }
             }
         }
     }
 
+    private static volatile float lcHalfHeight = 0f;
+
     private static void lcSetPartial(boolean active) {
+        if (active && lcNpvc != null) {
+            try {
+                float h = XposedHelpers.getFloatField(lcNpvc, "mExpandedHeight");
+                if (h > 100f && h < 2600f) lcHalfHeight = h;
+            } catch (Throwable ignored) {}
+        }
         if (lcPartialActive == active) return;
         lcPartialActive = active;
         synchronized (lcHeaderMotions) {
@@ -1827,6 +1836,12 @@ public class MainHook implements IXposedHookLoadPackage {
                 float qs = XposedHelpers.getFloatField(c, "qsExpandedFraction");
                 float sh = XposedHelpers.getFloatField(c, "shadeExpandedFraction");
                 on = sh > 0.02f;
+                try {
+                    if (qs < 0.05f && lcNpvc != null) {
+                        float h = XposedHelpers.getFloatField(lcNpvc, "mExpandedHeight");
+                        if (h > 400f && h < 3000f) lcHalfHeight = h;
+                    }
+                } catch (Throwable ignored) {}
                 lcApplyShift(1f - Math.min(1f, Math.max(0f, qs)));
             } else {
                 lcApplyShift(0f);
@@ -1865,7 +1880,14 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     // ---- own finger-following close of the full QS (replaces the stock jump to zero) ----
-    private static boolean lcDragArmed, lcDragging;
+    private static boolean lcDragArmed, lcDragging, lcMoved;
+    private static volatile boolean lcIgnoreRest;
+    private static long lcCurDownTime = -1;
+    private static volatile boolean lcGestureStart;
+    private static boolean lcNewGesture(android.view.MotionEvent e) {
+        if (e.getDownTime() != lcCurDownTime) { lcCurDownTime = e.getDownTime(); return true; }
+        return false;
+    }
     private static float lcDrag0X, lcDrag0Y, lcDragH0;
     private static android.view.VelocityTracker lcVt;
     private static float lcLastH;
@@ -1888,45 +1910,93 @@ public class MainHook implements IXposedHookLoadPackage {
         return dt > 0 ? (yn - lcY[idx]) * 1000f / dt : 0f;
     }
 
+    private static android.animation.ValueAnimator lcAnim;
+
+    private static void lcAnimateHeight(final Object npvc, float from, float to, int ms) {
+        try {
+            if (lcAnim != null) lcAnim.cancel();
+            final android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(from, to);
+            lcAnim = a;
+            a.setDuration(ms);
+            a.setInterpolator(new android.view.animation.DecelerateInterpolator(1.6f));
+            a.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+                @Override public void onAnimationUpdate(android.animation.ValueAnimator an) {
+                    try {
+                        XposedHelpers.callMethod(npvc, "setExpandedHeight", an.getAnimatedValue());
+                    } catch (Throwable ignored) {}
+                }
+            });
+            a.start();
+        } catch (Throwable t) { XposedBridge.log("PT anim ERR " + t); }
+    }
+
     private static boolean lcHandleQsDrag(XC_MethodHook.MethodHookParam p, android.view.MotionEvent e, Object npvc) {
         try {
-            if (!lcQsImmediate) { lcDragArmed = false; lcDragging = false; return false; }
             int act = e.getActionMasked();
+            boolean newG = lcNewGesture(e);
+            lcGestureStart = newG;
+            if (lcIgnoreRest) {
+                // rest of a gesture whose end we already handled: stock must not "finish" it again (it re-opened the shade)
+                if (newG || act == android.view.MotionEvent.ACTION_DOWN) { lcIgnoreRest = false; }
+                else { p.setResult(p.method.getName().equals("onTouchEvent")); return true; }
+            }
+            if (!lcQsImmediate) { lcDragArmed = false; lcDragging = false; return false; }
             float dens = android.content.res.Resources.getSystem().getDisplayMetrics().density;
             boolean isTouch = p.method.getName().equals("onTouchEvent");
             if (act == android.view.MotionEvent.ACTION_DOWN) {
-                lcDragging = false; lcDragArmed = false;
+                lcDragging = false; lcDragArmed = false; lcMoved = false;
                 boolean collapsed = (Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed");
                 Object q = XposedHelpers.getObjectField(npvc, "mQsController");
                 boolean qsOpen = (Boolean) XposedHelpers.callMethod(q, "getExpanded");
                 if (!collapsed && qsOpen && e.getRawY() > 80f * dens) {
                     lcDragArmed = true; lcDrag0X = e.getRawX(); lcDrag0Y = e.getRawY();
+                    lcDragH0 = XposedHelpers.getFloatField(npvc, "mExpandedHeight");
+                    lcLastH = lcDragH0;
                     lcN = 0; lcSample(e);
                 }
                 return false;
             }
             if (lcDragArmed || lcDragging) lcSample(e);
-            if (lcDragArmed && !lcDragging && isTouch) {
-                // stock tracking must not run in parallel with ours (it caused the flicker)
-                if (act == android.view.MotionEvent.ACTION_MOVE) {
-                    float dy0 = e.getRawY() - lcDrag0Y;
-                    float dx0 = Math.abs(e.getRawX() - lcDrag0X);
-                    if (!(dy0 < -18f * dens && dx0 < -dy0)) { p.setResult(true); return true; }
-                } else if (act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL) {
-                    lcDragArmed = false; p.setResult(true); return true;
+            if (act == android.view.MotionEvent.ACTION_MOVE && lcDragArmed) {
+                lcMoved = true;
+                if (!lcDragging) {
+                    float dy = e.getRawY() - lcDrag0Y;
+                    float dx = Math.abs(e.getRawX() - lcDrag0X);
+                    if (dy < -8f * dens && dx < -dy) {
+                        lcDragging = true; lcDrag0Y = e.getRawY();
+                    }
                 }
+                if (lcDragging) {
+                    float h = Math.max(0f, lcDragH0 + Math.min(0f, e.getRawY() - lcDrag0Y));
+                    lcLastH = h;
+                    XposedHelpers.callMethod(npvc, "setExpandedHeight", h);
+                    p.setResult(isTouch);
+                    return true;
+                }
+                // not (yet) an upward drag: keep the event away from the stock tracker
+                p.setResult(isTouch);
+                return true;
             }
-            if (act == android.view.MotionEvent.ACTION_MOVE && lcDragArmed && !lcDragging) {
-                float dy = e.getRawY() - lcDrag0Y;
-                float dx = Math.abs(e.getRawX() - lcDrag0X);
-                if (dy < -18f * dens && dx < -dy) {
-                    lcDragging = true;
-                    lcDragH0 = XposedHelpers.getFloatField(npvc, "mExpandedHeight");
-                    lcLastH = lcDragH0;
-                    lcDrag0Y = e.getRawY();
-                } else {
+            if ((act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL) && lcDragArmed) {
+                boolean wasDragging = lcDragging;
+                float vy = lcVelocity();
+                float cur = lcLastH;
+                lcDragging = false; lcDragArmed = false; lcIgnoreRest = true;
+                lcFlingGuard = System.currentTimeMillis();
+                if (!wasDragging) {  // plain tap: let stock handle it
+                    lcIgnoreRest = false;
                     return false;
                 }
+                boolean collapse = act == android.view.MotionEvent.ACTION_UP && (cur < lcDragH0 * 0.7f || vy < -600f);
+                if (collapse) {
+                    try { XposedHelpers.callMethod(npvc, "setExpandedFraction", 0f); } catch (Throwable ignored) {}
+                    lcAnimateHeight(npvc, cur, 0f, 260);
+                } else {
+                    lcAnimateHeight(npvc, cur, lcDragH0, 240);
+                }
+                p.setResult(isTouch);
+                XposedBridge.log("PT: close drag end collapse=" + collapse + " vy=" + vy + " h=" + cur);
+                return true;
             }
             if (!lcDragging) return false;
             if (act == android.view.MotionEvent.ACTION_MOVE) {
@@ -1941,7 +2011,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.log("PT: release samples=" + Math.min(lcN, 8) + " vy=" + vy);
                 float cur = lcLastH;
                 boolean collapse = (cur < lcDragH0 * 0.7f || vy < -600f);
-                lcDragging = false; lcDragArmed = false;
+                lcDragging = false; lcDragArmed = false; lcIgnoreRest = true;
                 lcFlingGuard = System.currentTimeMillis();
                 if (collapse) {
                     XposedHelpers.callMethod(npvc, "fling", Math.max(-3200f, Math.min(vy, -1400f)), 1.0f, false, false);
@@ -1955,6 +2025,78 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log("PT qs drag ERR " + t);
             lcDragging = false; lcDragArmed = false;
+        }
+        return false;
+    }
+
+    // ---- corner gestures at the panel's dispatchTouchEvent: sees every event, whatever consumes it ----
+    private static volatile boolean lcDispArmed, lcDispFired;
+    private static volatile float lcDispX, lcDispY;
+    private static volatile boolean lcDispQsOpen;
+
+    private static void lcHookDispatch(Class<?> npvClass) {
+        try {
+            XposedBridge.hookAllMethods(npvClass, "dispatchTouchEvent", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    try {
+                        Object npvc = lcNpvc;
+                        android.view.MotionEvent e = (android.view.MotionEvent) p.args[0];
+                        if (npvc == null || e == null) return;
+                        if (lcDispatchCorner(e, npvc)) p.setResult(true);
+                    } catch (Throwable t) { XposedBridge.log("PT disp ERR " + t); }
+                }
+            });
+            XposedBridge.log("PT: dispatch corner hook installed");
+        } catch (Throwable t) { XposedBridge.log("PT dispatch hook ERR " + t); }
+    }
+
+    private static boolean lcDispatchCorner(android.view.MotionEvent e, Object npvc) {
+        int act = e.getActionMasked();
+        float dens = android.content.res.Resources.getSystem().getDisplayMetrics().density;
+        int ww = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
+        if (act == android.view.MotionEvent.ACTION_DOWN) {
+            lcDispFired = false;
+            boolean collapsed = (Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed");
+            if (collapsed || e.getRawY() > 90f * dens) { lcDispArmed = false; return false; }
+            Object q = XposedHelpers.getObjectField(npvc, "mQsController");
+            lcDispArmed = true;
+            lcDispX = e.getRawX(); lcDispY = e.getRawY();
+            lcDispQsOpen = (Boolean) XposedHelpers.callMethod(q, "getExpanded");
+            return false;
+        }
+        if (!lcDispArmed) return false;
+        if (act == android.view.MotionEvent.ACTION_MOVE && !lcDispFired) {
+            float dy = e.getRawY() - lcDispY, dx = Math.abs(e.getRawX() - lcDispX);
+            if (dy < 26f * dens || dx > dy) return false;
+            lcDispFired = true; lcDispArmed = false;
+            Object q = XposedHelpers.getObjectField(npvc, "mQsController");
+            if (lcDispX >= ww / 2f && !lcDispQsOpen) {
+                lcQsImmediate = true;
+                lcSessionStart = System.currentTimeMillis();
+                lcBypass = true;
+                try {
+                    XposedHelpers.callMethod(q, "setExpandImmediate", true);
+                    XposedHelpers.callMethod(q, "setExpanded", true);
+                    lcAnimateHeight(npvc, XposedHelpers.getFloatField(npvc, "mExpandedHeight"), 3288f, 260);
+                } finally { lcBypass = false; }
+                XposedBridge.log("PT disp: half -> full QS");
+                return true;
+            }
+            if (lcDispX < ww / 2f && lcDispQsOpen) {
+                lcQsImmediate = false;
+                lcBypass = true;
+                try {
+                    XposedHelpers.callMethod(q, "setExpandImmediate", false);
+                    lcAnimateHeight(npvc, XposedHelpers.getFloatField(npvc, "mExpandedHeight"),
+                            lcHalfHeight > 400f ? lcHalfHeight : 1500f, 260);
+                } finally { lcBypass = false; }
+                XposedBridge.log("PT disp: full QS -> half panel (h=" + lcHalfHeight + ")");
+                return true;
+            }
+            return false;
+        }
+        if (act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL) {
+            boolean c = lcDispFired; lcDispArmed = false; lcDispFired = false; return c;
         }
         return false;
     }
@@ -2126,8 +2268,11 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
                 XposedBridge.hookAllMethods(npd, "updateExpandedHeightToMaxHeight", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
-                        // stock snaps the shade to full height whenever a row changes size: never while we drag
-                        if (lcDragging) p.setResult(null);
+                        // stock snaps the shade to full height whenever a row changes size;
+                        // that resurrected the panel right after our close -> ignore it during a QS session
+                        if (lcDragging || (lcQsImmediate && !(Boolean) XposedHelpers.callMethod(p.thisObject, "isFullyExpanded"))) {
+                            p.setResult(null);
+                        }
                     }
                 });
                 for (String m : new String[]{"flingToHeight", "fling", "collapse", "instantCollapse", "animateCloseQs"}) {
@@ -2144,6 +2289,10 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) { XposedBridge.log("PT dbg ERR " + t); }
 
         try {
+            Class<?> npvCls = XposedHelpers.findClassIfExists(
+                    "com.android.systemui.shade.NotificationPanelView", lp.classLoader);
+            if (npvCls != null) lcHookDispatch(npvCls);
+
             Class<?> npc = XposedHelpers.findClassIfExists(
                     "com.android.systemui.shade.NotificationPanelViewController", lp.classLoader);
             if (npc != null) {
@@ -2171,7 +2320,9 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float dens = android.content.res.Resources.getSystem().getDisplayMetrics().density;
                                 int ww = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
                                 Object q = XposedHelpers.getObjectField(npvc, "mQsController");
-                                if (act == android.view.MotionEvent.ACTION_DOWN) {
+                                if (act == android.view.MotionEvent.ACTION_DOWN || lcGestureStart) {
+                                    XposedBridge.log("PT: gesture start in open shade x=" + e.getRawX() + " y=" + e.getRawY()
+                                            + " act=" + act + " collapsed=" + collapsedNow + " qsOpen=" + XposedHelpers.callMethod(q, "getExpanded"));
                                     lcPending = false; lcFired = false;
                                     if (collapsedNow || e.getRawY() > 80f * dens) return;
                                     lcPending = true;
@@ -2187,20 +2338,41 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                                 if (act == android.view.MotionEvent.ACTION_MOVE && lcPending && !lcFired) {
                                     float dy = e.getRawY() - lcDownY, dx = Math.abs(e.getRawX() - lcDownX);
+                                    long nowM = System.currentTimeMillis();
+                                    if (nowM - lcDbgMove > 90) {
+                                        lcDbgMove = nowM;
+                                        XposedBridge.log("PT dbg move dy=" + dy + " dx=" + dx
+                                                + " need=" + (28f * dens) + " qsOpen=" + lcDownQsOpen + " x=" + lcDownX);
+                                    }
                                     if (dy < 28f * dens || dx > dy) return;   // must be a deliberate downward swipe
                                     lcFired = true;
+                                    lcIgnoreRest = true;   // the rest of this swipe must not be "finished" by the stock handler
                                     lcBlockClicksUntil = System.currentTimeMillis() + 1500;
                                     if (lcDownX >= ww / 2f && !lcDownQsOpen) {
                                         lcQsImmediate = true;
-                                        XposedHelpers.callMethod(q, "setExpandImmediate", true);
+                                        lcSessionStart = System.currentTimeMillis();
                                         lcBypass = true;
-                                        try { XposedHelpers.callMethod(npvc, "expandToQs"); } finally { lcBypass = false; }
+                                        try {
+                                            XposedHelpers.callMethod(q, "setExpandImmediate", true);
+                                            XposedHelpers.callMethod(q, "setExpanded", true);
+                                            lcAnimateHeight(npvc, XposedHelpers.getFloatField(npvc, "mExpandedHeight"),
+                                                    3288f, 260);
+                                        } finally { lcBypass = false; }
                                         XposedBridge.log("LC qs: swipe top-right in half panel -> full QS");
                                     } else if (lcDownX < ww / 2f && lcDownQsOpen) {
+                                        XposedBridge.log("PT corner: full QS -> half panel start, halfH=" + lcHalfHeight);
                                         lcQsImmediate = false;
-                                        XposedHelpers.callMethod(q, "setExpandImmediate", false);
-                                        XposedHelpers.callMethod(q, "closeQs");
-                                        XposedBridge.log("LC qs: swipe top-left in full QS -> half panel");
+                                        lcBypass = true;
+                                        try { XposedHelpers.callMethod(q, "setExpandImmediate", false); }
+                                        catch (Throwable t1) { XposedBridge.log("PT corner e1 " + t1); }
+                                        try { XposedHelpers.callMethod(q, "setExpanded", false); }
+                                        catch (Throwable t2) { XposedBridge.log("PT corner e2 " + t2); }
+                                        try {
+                                            XposedHelpers.callMethod(npvc, "setExpandedHeight",
+                                                    lcHalfHeight > 200f ? lcHalfHeight : 900f);
+                                        } catch (Throwable t3) { XposedBridge.log("PT corner e3 " + t3); }
+                                        lcBypass = false;
+                                        XposedBridge.log("PT corner: full QS -> half panel done");
                                     }
                                     if (p.method.getName().equals("onTouchEvent")) p.setResult(true);
                                 }
@@ -2208,7 +2380,27 @@ public class MainHook implements IXposedHookLoadPackage {
                             }
                             if (act != android.view.MotionEvent.ACTION_DOWN) return;
                             int w = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
-                            if (e.getRawX() < w / 2f) return;
+                            if (lcQsImmediate && (Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed")
+                                    && System.currentTimeMillis() - lcSessionStart > 800) {
+                                lcQsImmediate = false; lcIgnoreRest = false;
+                                try {
+                                    Object q0 = XposedHelpers.getObjectField(npvc, "mQsController");
+                                    XposedHelpers.callMethod(q0, "setExpandImmediate", false);
+                                } catch (Throwable ignored) {}
+                            }
+                            if (e.getRawX() < w / 2f) {
+                                if (lcQsImmediate) {
+                                    // stale native-QS session: a left swipe must open the notification shade
+                                    lcQsImmediate = false;
+                                    lcDragArmed = false; lcDragging = false;
+                                    try {
+                                        Object q0 = XposedHelpers.getObjectField(npvc, "mQsController");
+                                        XposedHelpers.callMethod(q0, "setExpandImmediate", false);
+                                    } catch (Throwable ignored) {}
+                                    XposedBridge.log("PT: stale QS session cleared by left swipe");
+                                }
+                                return;
+                            }
                             Object qs = XposedHelpers.getObjectField(npvc, "mQsController");
                             lcBypass = true;
                             boolean en;
