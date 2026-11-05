@@ -42,6 +42,10 @@ public class MainHook implements IXposedHookLoadPackage {
     public static volatile int notifTopMarginPx = 0;
     public static volatile int keyguardTopOffsetPx = 0;
     public static volatile boolean glanceAboveClock = true;
+    private static volatile boolean lcDateBypass = false;
+    private static long lcLastKgLog = 0;
+    private static long lcKgDbg = 0;
+    private static long lcKgDbg2 = 0;
 
     private static final int UNSET = -1;
     private static final int PARENT = 0;
@@ -2174,6 +2178,12 @@ public class MainHook implements IXposedHookLoadPackage {
                         {
                             StringBuilder sb = new StringBuilder();
                             StackTraceElement[] st = new Throwable().getStackTrace();
+                            for (int i = 2; i < Math.min(st.length, 8); i++) sb.append(st[i].getClassName().replaceAll(".*\\.", "")).append('.').append(st[i].getMethodName()).append('<');
+                            XposedBridge.log("PT sess: setExpandImmediate(" + on + ") sess=" + lcQsImmediate + " via " + sb);
+                        }
+                        {
+                            StringBuilder sb = new StringBuilder();
+                            StackTraceElement[] st = new Throwable().getStackTrace();
                             for (int i = 2; i < Math.min(st.length, 9); i++) sb.append(st[i].getMethodName()).append('<');
                             XposedBridge.log("LC qs: setExpandImmediate(" + on + ") sess=" + lcQsImmediate + " by " + sb);
                         }
@@ -2386,6 +2396,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             int w = android.content.res.Resources.getSystem().getDisplayMetrics().widthPixels;
                             if (lcQsImmediate && (Boolean) XposedHelpers.callMethod(npvc, "isFullyCollapsed")
                                     && System.currentTimeMillis() - lcSessionStart > 800) {
+                                XposedBridge.log("PT sess: cleared on left DOWN");
                                 lcQsImmediate = false; lcIgnoreRest = false;
                                 try {
                                     Object q0 = XposedHelpers.getObjectField(npvc, "mQsController");
@@ -2508,6 +2519,13 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static void initSystemUI(XC_LoadPackage.LoadPackageParam lpparam) {
+        XposedBridge.log("PT build 235614");
+        
+        
+        
+        
+        
+        
         ClassLoader cl = lpparam.classLoader;
 
         loadConfig(null);
@@ -2564,14 +2582,16 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         try {
-            hookDateTranslation(cl);
-            hookDateTranslationY(cl);
+            if (!glanceAboveClock) {
+                hookDateTranslation(cl);
+                hookDateTranslationY(cl);
+            }
         } catch (Throwable t) {
             XposedBridge.log(t);
         }
 
         try {
-            hookDateLayout(cl);
+            if (!glanceAboveClock) hookDateLayout(cl);
         } catch (Throwable t) {
             XposedBridge.log(t);
         }
@@ -2674,6 +2694,7 @@ public class MainHook implements IXposedHookLoadPackage {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 View v = (View) param.thisObject;
+                if (lcDateBypass) return;
                 if (!isDateOnly(v)) return;
 
                 View parent = (View) v.getParent();
@@ -2699,6 +2720,7 @@ public class MainHook implements IXposedHookLoadPackage {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 View v = (View) param.thisObject;
+                if (lcDateBypass) return;
                 if (!isDateOnly(v)) return;
 
                 View parent = (View) v.getParent();
@@ -2755,7 +2777,9 @@ public class MainHook implements IXposedHookLoadPackage {
                                             loadConfig(root.getContext());
                                         }
 
+                                        long t0 = System.currentTimeMillis();
                                         fixKeyguard(root, false);
+                                        if (t0 - lcKgDbg > 3000) XposedBridge.log("PT kg: preDraw children=" + root.getChildCount());
                                         forceCenterDateAndClock(root);
                                         lcGlanceAboveClock(root);
                                     } catch (Throwable ignored) {}
@@ -2769,6 +2793,18 @@ public class MainHook implements IXposedHookLoadPackage {
 
     /** Puts the date/weather/alarm row above the clock and applies the user's top offset. */
     private static void lcGlanceAboveClock(ViewGroup root) {
+        long nowG = System.currentTimeMillis();
+        if (nowG - lcKgDbg2 > 6000) {
+            lcKgDbg2 = nowG;
+            StringBuilder sb = new StringBuilder("PT kgtree:");
+            for (int i = 0; i < root.getChildCount(); i++) {
+                View c = root.getChildAt(i);
+                if (c.getVisibility() != View.VISIBLE) continue;
+                sb.append(' ').append(c.getClass().getSimpleName()).append("[t=").append(c.getTop())
+                  .append(",h=").append(c.getHeight()).append(",sy=").append(c.getScaleY()).append(']');
+            }
+            XposedBridge.log(sb.toString());
+        }
         try {
             View clock = null, large = null, glance = null;
             for (int i = 0; i < root.getChildCount(); i++) {
@@ -2781,14 +2817,39 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             View clockView = (large != null && large.getVisibility() == View.VISIBLE) ? large : clock;
             if (clockView == null) return;
+            long nowL = System.currentTimeMillis();
+            if (nowL - lcLastKgLog > 3000) {
+                lcLastKgLog = nowL;
+                XposedBridge.log("PT kg: root=" + root.getClass().getSimpleName() + " h=" + root.getHeight()
+                        + " clock=" + (clockView == null ? "-" : clockView.getClass().getSimpleName()
+                            + " top=" + clockView.getTop() + " h=" + clockView.getHeight()
+                            + " sy=" + clockView.getScaleY() + " ty=" + clockView.getTranslationY())
+                        + " glance=" + (glance == null ? "-" : glance.getClass().getSimpleName()
+                            + " top=" + glance.getTop() + " h=" + glance.getHeight()
+                            + " ty=" + glance.getTranslationY()
+                            + " vis=" + glance.getVisibility()));
+            }
             float off = keyguardTopOffsetPx;
             if (clockView != null) {
-                if (glance != null && glanceAboveClock && glance.getHeight() > 0) {
+                if (glance != null && glanceAboveClock) {
                     float dens = root.getResources().getDisplayMetrics().density;
-                    glance.setTranslationY(off);
-                    // clock sits under the date/weather/alarm row
-                    float targetTop = glance.getBottom() + glance.getTranslationY() + 6f * dens;
-                    clockView.setTranslationY(targetTop - clockView.getTop());
+                    int sb = root.getPaddingTop() > 0 ? root.getPaddingTop() : Math.round(30f * dens);
+                    float glanceH = glance.getHeight() > 0 ? glance.getHeight() : Math.round(56f * dens);
+                    float glanceTop = sb + 6f * dens + off;
+                    lcDateBypass = true;
+                    try { glance.setTranslationY(glanceTop - glance.getTop()); }
+                    finally { lcDateBypass = false; }
+                    if (nowG - lcLastKgLog > 3000) {
+                        lcLastKgLog = nowG;
+                        XposedBridge.log("PT kg2: glanceTop=" + glanceTop + " gTop=" + glance.getTop()
+                                + " gH=" + glanceH + " ty=" + glance.getTranslationY()
+                                + " clockTy=" + clockView.getTranslationY() + " vis=" + glance.getVisibility());
+                    }
+                    // the clock is scaled around its centre, so compensate the visual overflow
+                    float sy = clockView.getScaleY();
+                    float visualTop = clockView.getTop() - clockView.getHeight() * (sy - 1f) / 2f;
+                    float wantVisualTop = glanceTop + glanceH + 4f * dens;
+                    clockView.setTranslationY(wantVisualTop - visualTop);
                 } else {
                     clockView.setTranslationY(off);
                 }
